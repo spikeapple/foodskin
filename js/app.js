@@ -6,6 +6,7 @@ import {
 } from './util.js';
 import { ALLERGENS, ACNE_TAGS, FACE_AREAS, ACNE_KINDS, SEVERITIES, MEAL_TYPES, PERIODS, CATEGORIES, guessMealType } from './vocab.js';
 import { analyzeMeal, analyzeTriggers } from './claude.js';
+import { analyzeMealGemini, analyzeTriggersGemini, GEMINI_DEFAULT_MODEL } from './gemini.js';
 import { analyze, aiPrompt, levelOf } from './analyzer.js';
 import { buildRecords, mealCalories, mealAllergens, mealNames } from './records.js';
 import { buildExcel } from './excel.js';
@@ -20,7 +21,7 @@ const S = {
   tab: 'today',
   day: todayKey(),
   meals: [], products: [], careLogs: [], skinChecks: [],
-  apiKey: '', lastBackup: null, dropboxKey: '', dropboxLinked: false, dropboxPending: false,
+  provider: 'gemini', apiKey: '', geminiKey: '', geminiModel: '', lastBackup: null, dropboxKey: '', dropboxLinked: false, dropboxPending: false,
   range: 60, aiText: '', aiTextRange: 0, aiBusy: false, triggerBusy: false,
   exportStart: addDays(todayKey(), -29), exportEnd: todayKey(),
   includePhotos: true, includeAnalysis: true, exporting: false,
@@ -33,6 +34,9 @@ async function loadAll() {
   const [meals, products, careLogs, skinChecks] = await Promise.all(['meals', 'products', 'careLogs', 'skinChecks'].map((s) => db.all(s)));
   Object.assign(S, { meals, products, careLogs, skinChecks });
   S.apiKey = await db.getSetting('apiKey', '');
+  S.geminiKey = await db.getSetting('geminiKey', '');
+  S.geminiModel = await db.getSetting('geminiModel', '');
+  S.provider = await db.getSetting('aiProvider', S.apiKey ? 'claude' : 'gemini');
   S.lastBackup = await db.getSetting('lastBackup', null);
   S.dropboxKey = CONFIG.dropboxAppKey || (await db.getSetting('dropboxAppKey', ''));
   S.dropboxLinked = await dropbox.isLinked();
@@ -59,6 +63,17 @@ function toast(msg, ms = 2200) {
   toastTimer = setTimeout(() => { el.hidden = true; }, ms);
 }
 const fail = (err) => toast(err?.message || String(err), 4500);
+
+// ---------- AI 服務（Gemini 或 Claude，依設定切換） ----------
+const PROVIDERS = { gemini: 'Google Gemini', claude: 'Claude' };
+const aiKey = () => (S.provider === 'gemini' ? S.geminiKey : S.apiKey);
+const needKey = () => { toast(`請先在設定輸入 ${PROVIDERS[S.provider]} API Key`, 3500); };
+const aiMeal = (photo, hint) => (S.provider === 'gemini'
+  ? analyzeMealGemini(S.geminiKey, S.geminiModel, photo, hint)
+  : analyzeMeal(S.apiKey, photo, hint));
+const aiTriggers = (prompt) => (S.provider === 'gemini'
+  ? analyzeTriggersGemini(S.geminiKey, S.geminiModel, prompt)
+  : analyzeTriggers(S.apiKey, prompt));
 
 const chips = (options, selected, action, cls = '') =>
   options.map((o) => `<button class="chip ${cls} ${selected.includes(o) ? 'on' : ''}" data-action="${action}" data-value="${esc(o)}">${esc(o)}</button>`).join('');
@@ -407,14 +422,24 @@ const SHEETS = {
     return `<div class="sheet-bar"><span style="min-width:56px"></span><b>設定</b><button class="primary" data-action="close-sheet">完成</button></div>
       <div class="sheet-body">
         <section class="group">
-          <div class="group-head">Claude API Key</div>
-          <div class="row"><input type="password" autocomplete="off" autocapitalize="off" spellcheck="false" data-bind="draft" data-field="apiKey" value="${esc(S.apiKey)}" placeholder="sk-ant-..."></div>
+          <div class="group-head">AI 服務</div>
+          <div class="row">${seg(Object.values(PROVIDERS), PROVIDERS[S.provider], 'set-provider')}</div>
+          ${S.provider === 'gemini' ? `
+          <div class="row col"><span class="small muted">Gemini API Key</span>
+            <input type="password" autocomplete="off" autocapitalize="off" spellcheck="false" data-bind="draft" data-field="geminiKey" value="${esc(S.geminiKey)}" placeholder="AIza..."></div>
+          <div class="row col"><span class="small muted">模型（通常不用改）</span>
+            <input autocomplete="off" autocapitalize="off" spellcheck="false" data-bind="draft" data-field="geminiModel" value="${esc(S.geminiModel)}" placeholder="${GEMINI_DEFAULT_MODEL}"></div>` : `
+          <div class="row col"><span class="small muted">Claude API Key</span>
+            <input type="password" autocomplete="off" autocapitalize="off" spellcheck="false" data-bind="draft" data-field="apiKey" value="${esc(S.apiKey)}" placeholder="sk-ant-..."></div>`}
           <div class="row two">
             <button class="btn pink" data-action="save-api-key">儲存</button>
-            ${S.apiKey ? '<button class="btn danger" data-action="clear-api-key">移除</button>' : ''}
+            ${aiKey() ? '<button class="btn danger" data-action="clear-api-key">移除金鑰</button>' : ''}
           </div>
         </section>
-        <p class="foot">每位使用者輸入自己的金鑰，只存在這支手機。金鑰可到 <a href="https://console.anthropic.com/" target="_blank" rel="noopener">console.anthropic.com</a> 儲值後申請（與 Claude.ai 訂閱分開計費）。沒有金鑰也能使用，只是要手動輸入食物與熱量。</p>
+        <p class="foot">${S.provider === 'gemini'
+          ? '免費：到 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> 用 Google 帳號建立金鑰。免費方案每天有次數上限，且 Google 可能用送出的照片與文字改進產品。'
+          : '到 <a href="https://console.anthropic.com/" target="_blank" rel="noopener">console.anthropic.com</a> 儲值後申請（與 Claude.ai 訂閱分開計費）。'}
+          金鑰只存在這支手機。沒有金鑰也能使用，只是要手動輸入食物與熱量。</p>
 
         <section class="group">
           <div class="group-head">資料備份</div>
@@ -601,13 +626,13 @@ const ACTIONS = {
   },
   'analyze-meal': async () => {
     if (S.aiBusy) return;
-    if (!S.apiKey) { toast('請先在設定輸入 Claude API Key', 3500); return; }
+    if (!aiKey()) return needKey();
     if (!editor.photo && !editor.hint.trim()) { toast('請先拍照，或在補充說明輸入吃了什麼'); return; }
     S.aiBusy = true;
     renderSheet();
     const target = editor;
     try {
-      const r = await analyzeMeal(S.apiKey, target.photo, target.hint);
+      const r = await aiMeal(target.photo, target.hint);
       target.items = r.items;
       target.summary = r.summary;
       if (!r.items.length) toast('沒有辨識到食物，可以手動新增', 3500);
@@ -661,13 +686,13 @@ const ACTIONS = {
   'range': (t) => { S.range = Number(t.dataset.days); render(); },
   'run-ai': async () => {
     if (S.triggerBusy) return;
-    if (!S.apiKey) { toast('請先在設定輸入 Claude API Key', 3500); return; }
+    if (!aiKey()) return needKey();
     const end = todayKey(), start = addDays(end, -(S.range - 1));
     const result = analyze({ start, end, ...S });
     S.triggerBusy = true;
     render();
     try {
-      S.aiText = await analyzeTriggers(S.apiKey, aiPrompt(buildRecords(start, end, S), result, S.products));
+      S.aiText = await aiTriggers(aiPrompt(buildRecords(start, end, S), result, S.products));
       S.aiTextRange = S.range;
     } catch (err) {
       fail(err);
@@ -696,17 +721,30 @@ const ACTIONS = {
   },
 
   'open-settings': () => openSheet('settings'),
+  'set-provider': async (t) => {
+    S.provider = Object.keys(PROVIDERS).find((k) => PROVIDERS[k] === t.dataset.value) || 'gemini';
+    await db.setSetting('aiProvider', S.provider);
+    renderSheet();
+  },
   'save-api-key': async () => {
-    S.apiKey = (drafts.apiKey ?? S.apiKey).trim();
-    await db.setSetting('apiKey', S.apiKey);
+    if (S.provider === 'gemini') {
+      S.geminiKey = (drafts.geminiKey ?? S.geminiKey).trim();
+      S.geminiModel = (drafts.geminiModel ?? S.geminiModel).trim();
+      await db.setSetting('geminiKey', S.geminiKey);
+      await db.setSetting('geminiModel', S.geminiModel);
+    } else {
+      S.apiKey = (drafts.apiKey ?? S.apiKey).trim();
+      await db.setSetting('apiKey', S.apiKey);
+    }
     renderSheet();
     render();
-    toast(S.apiKey ? 'API Key 已儲存' : '已清除');
+    toast(aiKey() ? 'API Key 已儲存' : '已清除');
   },
   'clear-api-key': async () => {
-    S.apiKey = '';
-    drafts.apiKey = '';
-    await db.setSetting('apiKey', '');
+    const field = S.provider === 'gemini' ? 'geminiKey' : 'apiKey';
+    S[field] = '';
+    drafts[field] = '';
+    await db.setSetting(field, '');
     renderSheet();
     toast('已移除 API Key');
   },

@@ -36,18 +36,29 @@
 
 > ⚠️ 紀錄存在「主畫面上的 App」裡。在 Safari 分頁裡用和從主畫面開啟，是兩份不同的資料，請固定從主畫面開啟。
 
-## 三、Claude API Key（每個人自己輸入）
+## 三、AI 金鑰（每個人自己輸入，二選一）
 
-AI 辨識照片要用 Claude API。**API 和 Claude.ai 的訂閱是分開計費的**，要另外申請：
+AI 辨識照片可以用 **Google Gemini（有免費額度）** 或 **Claude（付費）**。在 App 右上角 ⚙︎ →「AI 服務」切換。
 
+### Google Gemini（免費）
+1. 到 https://aistudio.google.com/apikey 用 Google 帳號登入。
+2. 按 **Create API key** → 複製 `AIza...` 開頭的金鑰。
+3. App ⚙︎ →「AI 服務」選 **Google Gemini** → 貼上金鑰 → 儲存。
+
+- 免費方案每天有次數上限，用完會顯示「已達免費額度上限」，隔天就恢復。
+- 免費方案送出的照片與文字，Google 可能用來改進產品；介意的話可以在 AI Studio 綁定付費帳戶。
+- 「模型」欄位通常留空即可（預設 `gemini-3.8-flash`）。如果哪天 Google 停用這個模型，再到 AI Studio 查新的名稱填進去。
+
+### Claude（付費）
+**API 和 Claude.ai 的訂閱是分開計費的**，要另外申請：
 1. 到 https://console.anthropic.com 登入（可以用同一個 Anthropic 帳號）。
 2. **Billing** → 儲值（最低 US$5）。
 3. **API Keys** → **Create Key** → 複製 `sk-ant-...` 開頭的金鑰。
-4. 在 App 右上角 ⚙︎ →「Claude API Key」貼上 → 儲存。
+4. App ⚙︎ →「AI 服務」選 **Claude** → 貼上金鑰 → 儲存。
 
 - 費用：每分析一張餐點照片大約 US$0.01～0.04；兩人每天各 3 餐，一個月大約 US$3～6（粗估）。
-- 金鑰只存在那支手機。老婆可以用自己的金鑰，也可以輸入你的（費用就算在你的帳號）。
-- 沒有金鑰也能使用，只是食物和熱量要手動輸入。本機的誘因分析不需要金鑰。
+
+兩種金鑰都只存在那支手機。沒有金鑰也能使用，只是食物和熱量要手動輸入；本機的誘因分析不需要金鑰。
 
 ## 四、備份
 
@@ -104,6 +115,7 @@ js/
   app.js              畫面與操作
   db.js               手機內資料庫（IndexedDB）
   claude.js           Claude API：照片辨識、AI 解讀
+  gemini.js           Google Gemini API：照片辨識、AI 解讀
   analyzer.js         痘痘誘因推算
   records.js          依日期整合紀錄
   excel.js / xlsx.js  產生 Excel

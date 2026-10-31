@@ -1,9 +1,9 @@
 // 離線快取：同網域的檔案先走網路（拿到最新版），沒網路時改用快取
-const CACHE = 'foodskin-v1';
+const CACHE = 'foodskin-v2';
 const ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/config.js', './js/db.js', './js/util.js', './js/vocab.js',
-  './js/claude.js', './js/analyzer.js', './js/records.js', './js/xlsx.js', './js/excel.js', './js/pdf.js',
+  './js/claude.js', './js/gemini.js','./js/analyzer.js', './js/records.js', './js/xlsx.js', './js/excel.js', './js/pdf.js',
   './js/backup.js', './js/dropbox.js',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
 ];

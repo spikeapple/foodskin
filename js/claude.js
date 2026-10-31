@@ -4,14 +4,14 @@ import { ALLERGENS, ACNE_TAGS } from './vocab.js';
 const ENDPOINT = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-opus-5-5';
 
-const MEAL_SYSTEM = `你是營養師助理，協助使用者記錄飲食。請辨識照片（或文字描述）中的每一樣食物與飲料，並：
+export const MEAL_SYSTEM = `你是營養師助理，協助使用者記錄飲食。請辨識照片（或文字描述）中的每一樣食物與飲料，並：
 1. 以台灣常見份量粗估每一項的熱量（kcal，整數）。看不清楚份量時以一般一人份估算，並在 portion 寫出你假設的份量。
 2. 標出每一項可能含有的過敏原，只能從清單中選：${ALLERGENS.join('、')}。醬料、勾芡、炸粉等隱藏成分也要考慮。
 3. 標出可能與痘痘相關的飲食類型，只能從清單中選：${ACNE_TAGS.join('、')}。
 4. summary 用一到兩句繁體中文總結這一餐（總熱量、營養是否均衡、需要留意的地方）。若照片不是食物或無法辨識，foods 回傳空陣列並在 summary 說明。
 所有文字使用繁體中文。`;
 
-const TRIGGER_SYSTEM = `你是飲食與保養紀錄的分析助理。使用者會提供一段期間內每天的飲食、保養品使用與臉部痘痘紀錄，以及 App 本地統計的初步結果。
+export const TRIGGER_SYSTEM = `你是飲食與保養紀錄的分析助理。使用者會提供一段期間內每天的飲食、保養品使用與臉部痘痘紀錄，以及 App 本地統計的初步結果。
 請用繁體中文、條列清楚地回答：
 1. 最可能誘發痘痘的飲食（說明依據：出現在爆痘前幾天、出現頻率、與無痘日的差異）。
 2. 保養品是否可能是原因（新產品開始使用的時間、可能致粉刺成分、使用與爆痘的時間關係）。
@@ -20,7 +20,7 @@ const TRIGGER_SYSTEM = `你是飲食與保養紀錄的分析助理。使用者�
 資料量少時請直接說明推論可信度有限。你不是醫師，不做醫療診斷；若痘痘嚴重、反覆發炎或疼痛，請建議就醫。
 不要使用 Markdown 標題或表格，用簡單的條列即可。`;
 
-const MEAL_SCHEMA = {
+export const MEAL_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: ['foods', 'summary'],
@@ -87,10 +87,7 @@ export async function analyzeMeal(apiKey, photoDataURL, hint) {
       source: { type: 'base64', media_type: 'image/jpeg', data: photoDataURL.split(',')[1] },
     });
   }
-  let text = '請分析這一餐。';
-  if (hint.trim()) text += `\n使用者補充說明：${hint.trim()}`;
-  if (!photoDataURL) text += '\n（沒有照片，請依文字描述估算）';
-  content.push({ type: 'text', text });
+  content.push({ type: 'text', text: mealPrompt(photoDataURL, hint) });
 
   const json = await send(apiKey, {
     model: MODEL,
@@ -99,7 +96,18 @@ export async function analyzeMeal(apiKey, photoDataURL, hint) {
     messages: [{ role: 'user', content }],
     output_config: { effort: 'medium', format: { type: 'json_schema', schema: MEAL_SCHEMA } },
   });
+  return parseMeal(json);
+}
 
+export function mealPrompt(photoDataURL, hint) {
+  let text = '請分析這一餐。';
+  if (hint.trim()) text += `\n使用者補充說明：${hint.trim()}`;
+  if (!photoDataURL) text += '\n（沒有照片，請依文字描述估算）';
+  return text;
+}
+
+/** 把 AI 回傳的 JSON 文字轉成 App 的餐點格式（Claude 與 Gemini 共用） */
+export function parseMeal(json) {
   let parsed;
   try { parsed = JSON.parse(json); } catch { throw new Error('無法解析 AI 回傳的資料，請再試一次。'); }
   return {
