@@ -63,7 +63,7 @@ button { cursor: pointer; }
 
 #tabs {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-template-columns: repeat(6, 1fr);
   height: calc(var(--tabbar) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   background: color-mix(in srgb, var(--card) 92%, transparent);
@@ -107,7 +107,7 @@ main { max-width: 600px; margin: 0 auto; padding: 4px 16px 0; }
 .kv { display: flex; justify-content: space-between; gap: 12px; }
 .kv b { font-weight: 600; text-align: right; }
 
-input[type=text], input[type=password], input[type=number], input[type=date], input[type=time], input:not([type]), textarea, select {
+input[type=text], input[type=password], input[type=search], input[type=number], input[type=date], input[type=time], input:not([type]), textarea, select {
   width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px;
   background: var(--bg); outline: none; min-width: 0;
 }
@@ -177,6 +177,15 @@ input[type=date], input[type=time] { min-height: 38px; }
 .multi.purple { color: var(--purple); }
 .multi select { font-size: 14px; font-weight: 400; color: var(--text); height: 38px; }
 .icon { border: 0; background: none; font-size: 16px; padding: 4px 6px; }
+
+.chip small { opacity: .65; font-size: 11px; }
+
+/* 臉部自拍 */
+.face-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+.face-cell { border: 0; padding: 0; background: none; display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 12px; color: var(--muted); }
+.face-cell img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 12px; background: var(--chip); }
+.face-cell.add { aspect-ratio: auto; justify-content: center; min-height: 84px; border: 1.5px dashed var(--line); border-radius: 12px; font-size: 26px; color: var(--pink); cursor: pointer; }
+.face-cell.add small { font-size: 12px; }
 
 /* 分析 */
 .suspect { flex-direction: column; align-items: stretch; gap: 6px; }

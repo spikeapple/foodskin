@@ -1,15 +1,16 @@
 // IndexedDB：所有紀錄都存在這支手機的瀏覽器裡
 const DB_NAME = 'foodskin';
-const VERSION = 1;
+const VERSION = 2;
 const STORES = {
   meals: 'id',        // { id, day, time, type, thumb, hasPhoto, items[], notes, summary }
-  photos: 'id',       // { id(=meal id), data }  原尺寸照片另外存，列表只讀縮圖
+  photos: 'id',       // { id(=meal id 或 face id), data }  原尺寸照片另外存，列表只讀縮圖
+  faces: 'id',        // { id, day, time, thumb, notes, ai }  臉部自拍
   products: 'id',     // { id, name, brand, category, ingredients, useMorning, useEvening, isActive, createdAt }
   careLogs: 'id',     // { id: 'day|period', day, period, productNames[] }
   skinChecks: 'day',  // { day, severity, areas[], kinds[], notes }
   settings: 'key',    // { key, value }
 };
-export const DATA_STORES = ['meals', 'photos', 'products', 'careLogs', 'skinChecks'];
+export const DATA_STORES = ['meals', 'photos', 'faces', 'products', 'careLogs', 'skinChecks'];
 
 let opening;
 function open() {

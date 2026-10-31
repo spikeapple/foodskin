@@ -1,5 +1,8 @@
 // 直接從瀏覽器呼叫 Google Gemini API（Google AI Studio 的金鑰，有免費額度）
-import { MEAL_SYSTEM, TRIGGER_SYSTEM, MEAL_SCHEMA, mealPrompt, parseMeal } from './claude.js';
+import {
+  MEAL_SYSTEM, TRIGGER_SYSTEM, MEAL_SCHEMA, mealPrompt, parseMeal,
+  FACE_SYSTEM, FACE_SCHEMA, FACE_PROMPT, parseFace,
+} from './claude.js';
 
 export const GEMINI_DEFAULT_MODEL = 'gemini-3.8-flash';
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
@@ -7,7 +10,7 @@ const BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 // Gemini 的 responseSchema 用 OpenAPI 子集：型別大寫、不支援 additionalProperties
 function toGeminiSchema(s) {
   const out = { type: s.type.toUpperCase() };
-  if (s.enum) out.enum = s.enum;
+  if (s.enum && s.type === 'string') out.enum = s.enum;  // Gemini 只支援字串列舉
   if (s.items) out.items = toGeminiSchema(s.items);
   if (s.properties) {
     out.properties = Object.fromEntries(Object.entries(s.properties).map(([k, v]) => [k, toGeminiSchema(v)]));
@@ -23,22 +26,25 @@ const BUSY = new Set([500, 502, 503, 504]);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function post(apiKey, model, body) {
+  const { example, ...payload } = body;  // example 只給 withoutSchema 用，不送出
   try {
     return await fetch(`${BASE}${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
     });
   } catch {
     throw new Error('無法連線到 Gemini，請確認網路。');
   }
 }
 
+const MEAL_EXAMPLE = '{"foods":[{"name":"食物名稱","portion":"份量","calories":整數,"allergens":["…"],"acne_tags":["…"]}],"summary":"總結"}';
+const FACE_EXAMPLE = '{"severity":0到3的整數,"areas":["…"],"kinds":["…"],"summary":"描述"}';
+
 // 有些模型不接受 responseSchema（回 400），改成只要求 JSON、把格式寫在指示裡
 function withoutSchema(body) {
   const { responseSchema, ...config } = body.generationConfig;
-  const hint = `\n\n只回傳 JSON，不要其他文字，格式如下（allergens、acne_tags 只能用上面清單中的詞）：
-{"foods":[{"name":"食物名稱","portion":"份量","calories":整數,"allergens":["…"],"acne_tags":["…"]}],"summary":"總結"}`;
+  const hint = `\n\n只回傳 JSON，不要其他文字，清單類欄位只能用上面清單中的詞。格式如下：\n${body.example}`;
   return {
     ...body,
     system_instruction: { parts: [{ text: body.system_instruction.parts[0].text + hint }] },
@@ -116,8 +122,19 @@ export async function analyzeMealGemini(apiKey, model, photoDataURL, hint) {
     system_instruction: { parts: [{ text: MEAL_SYSTEM }] },
     contents: [{ role: 'user', parts }],
     generationConfig: { responseMimeType: 'application/json', responseSchema: toGeminiSchema(MEAL_SCHEMA) },
+    example: MEAL_EXAMPLE,
   });
   return parseMeal(json);
+}
+
+export async function analyzeFaceGemini(apiKey, model, photoDataURL) {
+  const json = await send(apiKey, model, {
+    system_instruction: { parts: [{ text: FACE_SYSTEM }] },
+    contents: [{ role: 'user', parts: [{ inline_data: { mime_type: 'image/jpeg', data: photoDataURL.split(',')[1] } }, { text: FACE_PROMPT }] }],
+    generationConfig: { responseMimeType: 'application/json', responseSchema: toGeminiSchema(FACE_SCHEMA) },
+    example: FACE_EXAMPLE,
+  });
+  return parseFace(json);
 }
 
 export function analyzeTriggersGemini(apiKey, model, prompt) {

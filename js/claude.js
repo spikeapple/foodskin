@@ -1,5 +1,5 @@
 // 直接從瀏覽器呼叫 Claude Messages API（每位使用者用自己的 API Key）
-import { ALLERGENS, ACNE_TAGS } from './vocab.js';
+import { ALLERGENS, ACNE_TAGS, FACE_AREAS, ACNE_KINDS } from './vocab.js';
 
 const ENDPOINT = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-opus-5-5';
@@ -43,6 +43,39 @@ export const MEAL_SCHEMA = {
     summary: { type: 'string' },
   },
 };
+
+export const FACE_SYSTEM = `你是肌膚紀錄助理（不是醫師），協助使用者用自拍記錄每天的痘痘狀況，方便日後比較。請客觀觀察照片中的臉部：
+1. severity：0＝看不到痘痘、1＝輕微（零星幾顆）、2＝中等（多處或有發炎）、3＝嚴重（大範圍、明顯紅腫或囊腫）。
+2. areas：有痘痘的部位，只能從清單中選：${FACE_AREAS.join('、')}。
+3. kinds：看得出的痘痘類型，只能從清單中選：${ACNE_KINDS.join('、')}。
+4. summary：用一到兩句繁體中文描述（大約數量、位置、發炎程度、與膚色泛紅等）。光線、角度、遮擋或解析度不足而無法判斷時，請直接說明。
+不要評論長相，不做醫療診斷。`;
+
+export const FACE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['severity', 'areas', 'kinds', 'summary'],
+  properties: {
+    severity: { type: 'integer', enum: [0, 1, 2, 3] },
+    areas: { type: 'array', items: { type: 'string', enum: FACE_AREAS } },
+    kinds: { type: 'array', items: { type: 'string', enum: ACNE_KINDS } },
+    summary: { type: 'string' },
+  },
+};
+
+export const FACE_PROMPT = '請記錄這張自拍中的痘痘狀況。';
+
+/** AI 回傳的 JSON 文字 → { severity, areas, kinds, summary }（Claude 與 Gemini 共用） */
+export function parseFace(json) {
+  let p;
+  try { p = JSON.parse(json.slice(json.indexOf('{'), json.lastIndexOf('}') + 1)); } catch { throw new Error('無法解析 AI 回傳的資料，請再試一次。'); }
+  return {
+    severity: Math.min(3, Math.max(0, Math.round(Number(p.severity) || 0))),
+    areas: (p.areas || []).filter((a) => FACE_AREAS.includes(a)),
+    kinds: (p.kinds || []).filter((k) => ACNE_KINDS.includes(k)),
+    summary: p.summary || '',
+  };
+}
 
 async function send(apiKey, body) {
   if (!apiKey) throw new Error('尚未設定 Claude API Key，請按右上角 ⚙︎ 輸入。');
@@ -122,6 +155,23 @@ export function parseMeal(json) {
       acneTags: f.acne_tags || [],
     })),
   };
+}
+
+export async function analyzeFace(apiKey, photoDataURL) {
+  const json = await send(apiKey, {
+    model: MODEL,
+    max_tokens: 16000,
+    system: FACE_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: photoDataURL.split(',')[1] } },
+        { type: 'text', text: FACE_PROMPT },
+      ],
+    }],
+    output_config: { effort: 'medium', format: { type: 'json_schema', schema: FACE_SCHEMA } },
+  });
+  return parseFace(json);
 }
 
 export function analyzeTriggers(apiKey, prompt) {

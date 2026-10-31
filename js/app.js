@@ -5,8 +5,8 @@ import {
   esc, uid, groupBy, sum, uniqSorted, resizeImage, shareOrDownload,
 } from './util.js';
 import { ALLERGENS, ACNE_TAGS, FACE_AREAS, ACNE_KINDS, SEVERITIES, MEAL_TYPES, PERIODS, CATEGORIES, guessMealType } from './vocab.js';
-import { analyzeMeal, analyzeTriggers } from './claude.js';
-import { analyzeMealGemini, analyzeTriggersGemini, listGeminiModels, GEMINI_DEFAULT_MODEL } from './gemini.js';
+import { analyzeMeal, analyzeTriggers, analyzeFace } from './claude.js';
+import { analyzeMealGemini, analyzeTriggersGemini, analyzeFaceGemini, listGeminiModels, GEMINI_DEFAULT_MODEL } from './gemini.js';
 import { analyze, aiPrompt, levelOf } from './analyzer.js';
 import { buildRecords, mealCalories, mealAllergens, mealNames } from './records.js';
 import { buildExcel } from './excel.js';
@@ -20,7 +20,7 @@ const $ = (sel) => document.querySelector(sel);
 const S = {
   tab: 'today',
   day: todayKey(),
-  meals: [], products: [], careLogs: [], skinChecks: [],
+  meals: [], products: [], careLogs: [], skinChecks: [], faces: [], hiddenFoods: [],
   provider: 'gemini', apiKey: '', geminiKey: '', geminiModel: '', lastBackup: null, dropboxKey: '', dropboxLinked: false, dropboxPending: false,
   range: 60, aiText: '', aiTextRange: 0, aiBusy: false, triggerBusy: false,
   exportStart: addDays(todayKey(), -29), exportEnd: todayKey(),
@@ -29,10 +29,13 @@ const S = {
 let sheet = null;          // 目前開啟的抽屜 { kind, ... }
 let editor = null;         // 餐點編輯中的暫存
 let productEditor = null;  // 保養品編輯中的暫存
+let faceEditor = null;     // 自拍編輯中的暫存
 
 async function loadAll() {
-  const [meals, products, careLogs, skinChecks] = await Promise.all(['meals', 'products', 'careLogs', 'skinChecks'].map((s) => db.all(s)));
-  Object.assign(S, { meals, products, careLogs, skinChecks });
+  const stores = ['meals', 'products', 'careLogs', 'skinChecks', 'faces'];
+  const [meals, products, careLogs, skinChecks, faces] = await Promise.all(stores.map((s) => db.all(s)));
+  Object.assign(S, { meals, products, careLogs, skinChecks, faces });
+  S.hiddenFoods = await db.getSetting('hiddenFoods', []);
   S.apiKey = await db.getSetting('apiKey', '');
   S.geminiKey = await db.getSetting('geminiKey', '');
   S.geminiModel = await db.getSetting('geminiModel', '');
@@ -52,6 +55,39 @@ const mealsOn = (day) => S.meals.filter((m) => m.day === day).sort((a, b) => a.t
 const careLogOf = (day, period) => S.careLogs.find((l) => l.id === `${day}|${period}`);
 const checkOf = (day) => S.skinChecks.find((c) => c.day === day);
 const isRoutine = (p, period) => (period === '早上' ? p.useMorning : p.useEvening);
+const facesOn = (day) => S.faces.filter((f) => f.day === day).sort((a, b) => a.time.localeCompare(b.time));
+
+// 「同前一天」：找出某天之前、最近一次有紀錄的那一天（中間漏記幾天也找得到）
+function lastDayBefore(day, days) {
+  let best = null;
+  for (const d of days) if (d < day && (!best || d > best)) best = d;
+  return best;
+}
+const prevMealDay = (day) => lastDayBefore(day, S.meals.map((m) => m.day));
+const prevMealOfType = (day, type) => {
+  const d = lastDayBefore(day, S.meals.filter((m) => m.type === type && m.items.length).map((m) => m.day));
+  return d ? mealsOn(d).filter((m) => m.type === type && m.items.length).pop() : null;
+};
+const prevCareLog = (day, period) => {
+  const d = lastDayBefore(day, S.careLogs.filter((l) => l.period === period && l.productNames.length).map((l) => l.day));
+  return d ? careLogOf(d, period) : null;
+};
+
+// 常吃的食物：從過去所有餐點自動整理，同名食物取最近一次的份量與熱量
+function foodLibrary() {
+  const map = new Map();
+  const sorted = [...S.meals].sort((a, b) => `${a.day} ${a.time}`.localeCompare(`${b.day} ${b.time}`));
+  for (const m of sorted) {
+    for (const it of m.items) {
+      const name = it.name.trim();
+      if (!name || S.hiddenFoods.includes(name)) continue;
+      const prev = map.get(name);
+      map.set(name, { ...structuredClone(it), name, count: (prev?.count || 0) + 1, last: m.day });
+    }
+  }
+  return [...map.values()].sort((a, b) => b.count - a.count || b.last.localeCompare(a.last));
+}
+const cloneItem = (it) => ({ name: it.name, portion: it.portion || '', calories: Number(it.calories) || 0, allergens: [...it.allergens], acneTags: [...it.acneTags] });
 
 // ---------- 共用 UI ----------
 let toastTimer;
@@ -71,6 +107,9 @@ const needKey = () => { toast(`請先在設定輸入 ${PROVIDERS[S.provider]} AP
 const aiMeal = (photo, hint) => (S.provider === 'gemini'
   ? analyzeMealGemini(S.geminiKey, S.geminiModel, photo, hint)
   : analyzeMeal(S.apiKey, photo, hint));
+const aiFace = (photo) => (S.provider === 'gemini'
+  ? analyzeFaceGemini(S.geminiKey, S.geminiModel, photo)
+  : analyzeFace(S.apiKey, photo));
 const aiTriggers = (prompt) => (S.provider === 'gemini'
   ? analyzeTriggersGemini(S.geminiKey, S.geminiModel, prompt)
   : analyzeTriggers(S.apiKey, prompt));
@@ -87,7 +126,7 @@ const toggle = (bind, field, checked, label) =>
 const spinnerLabel = (busy, idle, working) => (busy ? `<span class="spinner"></span> ${working}` : idle);
 
 // ---------- 畫面 ----------
-const TITLES = { today: '今日紀錄', meals: '飲食紀錄', products: '保養品', analysis: '誘因分析', export: '匯出報告' };
+const TITLES = { today: '今日紀錄', meals: '飲食紀錄', products: '保養品', faces: '臉部自拍', analysis: '誘因分析', export: '匯出報告' };
 
 function render() {
   $('#title').textContent = S.tab === 'today' && S.day !== todayKey() ? `${fmtMd(S.day)} 紀錄` : TITLES[S.tab];
@@ -112,7 +151,7 @@ function renderSheet(first = false) {
 }
 
 function openSheet(kind, extra = {}) { sheet = { kind, ...extra }; renderSheet(true); }
-function closeSheet() { sheet = null; editor = null; productEditor = null; renderSheet(); }
+function closeSheet() { sheet = null; editor = null; productEditor = null; faceEditor = null; renderSheet(); }
 
 function mealRow(m) {
   const allergens = mealAllergens(m);
@@ -128,7 +167,7 @@ function mealRow(m) {
 }
 
 function backupBanner() {
-  const hasData = S.meals.length || S.skinChecks.length || S.careLogs.length;
+  const hasData = S.meals.length || S.skinChecks.length || S.careLogs.length || S.faces.length;
   if (!hasData) return '';
   const days = S.lastBackup ? Math.floor((Date.now() - new Date(S.lastBackup)) / 86400000) : null;
   if (days !== null && days < 7) return '';
@@ -140,6 +179,7 @@ const VIEWS = {
     const day = S.day;
     const meals = mealsOn(day);
     const allergens = uniqSorted(meals.flatMap(mealAllergens));
+    const prevDay = prevMealDay(day);
     return `
       ${backupBanner()}
       <div class="daynav">
@@ -152,6 +192,7 @@ const VIEWS = {
         <div class="group-head"><span>🍱 飲食</span><span>${sum(meals, mealCalories)} kcal</span></div>
         ${meals.map(mealRow).join('')}
         <button class="row action" data-action="new-meal">📷 拍照記錄一餐</button>
+        ${prevDay ? `<button class="row action small" data-action="copy-prev-meals" data-from="${prevDay}">📋 同前一天（${fmtMd(prevDay)}，${mealsOn(prevDay).length} 餐）</button>` : ''}
       </section>
       ${allergens.length ? `<p class="foot">今日可能過敏原：${esc(allergens.join('、'))}</p>` : ''}
 
@@ -162,8 +203,12 @@ const VIEWS = {
 
   meals() {
     const groups = [...groupBy(S.meals, (m) => m.day)].sort((a, b) => b[0].localeCompare(a[0]));
+    const libCount = foodLibrary().length;
     return `
-      <section class="group"><button class="row action" data-action="new-meal">📷 新增餐點</button></section>
+      <section class="group">
+        <button class="row action" data-action="new-meal">📷 新增餐點</button>
+        <button class="row action small" data-action="open-foods">📚 常吃的食物（${libCount} 項）</button>
+      </section>
       ${groups.length ? '' : `<div class="empty"><div class="big">🍱</div>還沒有飲食紀錄<br>拍下這一餐開始記錄吧</div>`}
       ${groups.map(([day, meals]) => `
         <section class="group">
@@ -185,6 +230,30 @@ const VIEWS = {
       ${active.length ? `<section class="group"><div class="group-head">使用中</div>${active.map(row).join('')}</section>` : ''}
       ${inactive.length ? `<section class="group"><div class="group-head">已停用</div>${inactive.map(row).join('')}</section>` : ''}
       <p class="foot">填寫全成分，分析時會檢查是否含有常見可能致粉刺的成分。</p>
+    `;
+  },
+
+  faces() {
+    const groups = [...groupBy(S.faces, (f) => f.day)].sort((a, b) => b[0].localeCompare(a[0]));
+    const sevText = (day) => {
+      const c = checkOf(day);
+      return c ? (c.severity > 0 ? `<span style="color:var(--pink)">長痘・${SEVERITIES[c.severity]}</span>` : '沒有長痘') : '';
+    };
+    return `
+      <section class="group">
+        <div class="row btn-row">
+          ${faceButtons()}
+        </div>
+      </section>
+      <p class="foot">建議每天固定時間、同樣光線與角度、素顏拍攝，前後比較才準。照片只存在這支手機。</p>
+      ${groups.length ? '' : `<div class="empty"><div class="big">🤳</div>還沒有臉部自拍<br>每天拍一張，之後可以比較變化，<br>也可以請 AI 判讀痘痘狀況</div>`}
+      ${groups.map(([day, faces]) => `
+        <section class="group">
+          <div class="group-head"><span>${fmtDay(day)}</span><span>${sevText(day)}</span></div>
+          <div class="row face-grid">
+            ${faces.sort((a, b) => a.time.localeCompare(b.time)).map((f) => `<button class="face-cell" data-action="edit-face" data-id="${f.id}"><img src="${f.thumb}" alt=""><small>${f.time}${f.ai ? ' ✨' : ''}</small></button>`).join('')}
+          </div>
+        </section>`).join('')}
     `;
   },
 
@@ -272,6 +341,7 @@ const VIEWS = {
 function careSection(period) {
   const log = careLogOf(S.day, period);
   const used = log?.productNames || [];
+  const prev = prevCareLog(S.day, period);
   const list = S.products
     .filter((p) => p.isActive || used.includes(p.name))
     .sort((a, b) => Number(isRoutine(b, period)) - Number(isRoutine(a, period)));
@@ -284,7 +354,20 @@ function careSection(period) {
         ${isRoutine(p, period) ? '<small class="muted">常用</small>' : ''}
       </button>`).join('') : `<button class="row muted" data-tab="products">尚未建立保養品，點這裡新增 ›</button>`}
     ${list.length ? `<button class="row action small" data-action="apply-routine" data-period="${period}">套用${period}常用組合</button>` : ''}
+    ${prev ? `<button class="row action small" data-action="copy-prev-care" data-period="${period}" data-from="${prev.day}">📋 同前一天（${fmtMd(prev.day)}：${esc(prev.productNames.join('、'))}）</button>` : ''}
   </section>`;
+}
+
+const faceButtons = () => `
+  <label class="btn pink">🤳 自拍<input type="file" accept="image/*" capture="user" data-bind="face-photo" hidden></label>
+  <label class="btn">🖼️ 從相簿<input type="file" accept="image/*" data-bind="face-photo" hidden></label>`;
+
+function faceStrip(day) {
+  const faces = facesOn(day);
+  return `<div class="row face-grid">
+      ${faces.map((f) => `<button class="face-cell" data-action="edit-face" data-id="${f.id}"><img src="${f.thumb}" alt=""><small>${f.time}${f.ai ? ' ✨' : ''}</small></button>`).join('')}
+      <label class="face-cell add">🤳<small>自拍記錄</small><input type="file" accept="image/*" capture="user" data-bind="face-photo" hidden></label>
+    </div>`;
 }
 
 function skinSection(day) {
@@ -296,6 +379,7 @@ function skinSection(day) {
           <button class="btn" data-action="skin-set" data-sev="0">😊 沒有長痘</button>
           <button class="btn pink" data-action="skin-set" data-sev="1">😣 有長痘</button>
         </div>
+        ${faceStrip(day)}
       </section>
       <p class="foot">每天記錄（包含沒長痘的日子），誘因分析才會準確。</p>`;
   }
@@ -306,8 +390,17 @@ function skinSection(day) {
       <div class="row col"><small class="muted">部位</small><div class="chips">${chips(FACE_AREAS, c.areas, 'skin-area')}</div></div>
       <div class="row col"><small class="muted">類型</small><div class="chips">${chips(ACNE_KINDS, c.kinds, 'skin-kind', 'purple')}</div></div>` : ''}
     <div class="row"><textarea data-bind="skin-notes" placeholder="備註（例：生理期前、熬夜、壓力大、戴口罩）">${esc(c.notes)}</textarea></div>
+    ${faceStrip(day)}
     <button class="row danger small" data-action="skin-clear">清除當日紀錄</button>
   </section>`;
+}
+
+function foodLibChips(e) {
+  const q = (e.filter || '').trim();
+  const list = foodLibrary().filter((f) => !q || f.name.includes(q)).slice(0, q ? 60 : 30);
+  if (!list.length) return '<span class="muted small">找不到符合的食物</span>';
+  const picked = e.items.map((i) => i.name.trim());
+  return list.map((f) => `<button class="chip ${picked.includes(f.name) ? 'on' : ''}" data-action="pick-food" data-value="${esc(f.name)}">${esc(f.name)}<small> ${Number(f.calories) || 0}</small></button>`).join('');
 }
 
 // ---------- 抽屜 ----------
@@ -315,6 +408,8 @@ const SHEETS = {
   meal() {
     const e = editor;
     const total = sum(e.items, (i) => Number(i.calories) || 0);
+    const lib = foodLibrary();
+    const prevSame = e.id ? null : prevMealOfType(e.day, e.type);
     const item = (it, i) => `<div class="row item">
         <div class="item-line">
           <input class="strong" data-bind="item" data-idx="${i}" data-field="name" value="${esc(it.name)}" placeholder="食物名稱">
@@ -362,6 +457,15 @@ const SHEETS = {
         </section>
         <p class="foot">熱量依照片粗估，僅供參考；結果可以在下方修改。</p>
 
+        ${prevSame || lib.length ? `<section class="group">
+          <div class="group-head">快速選取</div>
+          ${prevSame ? `<button class="row action small" data-action="copy-prev-meal" data-id="${prevSame.id}">📋 同前一天的${e.type}（${fmtMd(prevSame.day)}：${esc(mealNames(prevSame))}）</button>` : ''}
+          ${lib.length ? `
+            ${lib.length > 12 ? `<div class="row"><input type="search" data-bind="food-filter" value="${esc(e.filter || '')}" placeholder="搜尋常吃的食物"></div>` : ''}
+            <div class="row"><div class="chips" id="food-lib">${foodLibChips(e)}</div></div>` : ''}
+        </section>
+        ${lib.length ? '<p class="foot">點一下加入（再點一下移除），份量與熱量沿用上次的紀錄，可以再修改。</p>' : ''}` : ''}
+
         <section class="group">
           <div class="group-head"><span>食物</span><span id="meal-total">合計 ${total} kcal</span></div>
           ${e.items.map(item).join('')}
@@ -398,6 +502,59 @@ const SHEETS = {
         </section>
         <p class="foot">停用而不是刪除，可以保留過去的使用紀錄供分析。</p>
         ${p.id ? '<button class="btn block danger" data-action="delete-product">刪除這個保養品</button>' : ''}
+      </div>`;
+  },
+
+  face() {
+    const f = faceEditor;
+    const prev = S.faces.filter((x) => x.id !== f.id && `${x.day} ${x.time}` < `${f.day} ${f.time}`)
+      .sort((a, b) => `${b.day} ${b.time}`.localeCompare(`${a.day} ${a.time}`))[0];
+    const ai = f.ai;
+    return `<div class="sheet-bar"><button data-action="close-sheet">取消</button><b>${f.id ? '臉部自拍' : '新增自拍'}</b><button class="primary" data-action="save-face">儲存</button></div>
+      <div class="sheet-body">
+        <section class="group">
+          <div class="row"><img class="photo" src="${f.photo}" alt="臉部自拍"></div>
+          <div class="row"><span class="label">日期</span><input type="date" data-bind="face-day" value="${f.day}" max="${todayKey()}"><input type="time" data-bind="face-time" value="${f.time}"></div>
+        </section>
+        ${prev ? `<section class="group">
+          <div class="group-head"><span>上一張（${fmtMd(prev.day)} ${prev.time}）</span><span>比較用</span></div>
+          <div class="row"><img class="photo" style="max-height:200px" src="${prev.thumb}" alt="上一張自拍"></div>
+          ${prev.ai?.summary ? `<div class="row small muted">${esc(prev.ai.summary)}</div>` : ''}
+        </section>` : ''}
+
+        <section class="group">
+          <div class="group-head">AI 判讀膚況</div>
+          <button class="row action" data-action="analyze-face" ${S.aiBusy ? 'disabled' : ''}>${spinnerLabel(S.aiBusy, '✨ 請 AI 判讀痘痘狀況', '分析中，約需 10–30 秒…')}</button>
+          ${ai ? `
+            <div class="row kv"><span>嚴重程度</span><b>${SEVERITIES[ai.severity]}</b></div>
+            ${ai.areas.length ? `<div class="row kv"><span>部位</span><b>${esc(ai.areas.join('、'))}</b></div>` : ''}
+            ${ai.kinds.length ? `<div class="row kv"><span>類型</span><b>${esc(ai.kinds.join('、'))}</b></div>` : ''}
+            <div class="row small">${esc(ai.summary)}</div>
+            <button class="row action small" data-action="apply-face-ai">⤵️ 套用到 ${fmtMd(f.day)} 的臉部狀況</button>` : ''}
+        </section>
+        <p class="foot">${S.provider === 'gemini' ? '⚠︎ 使用 Gemini 免費方案時，Google 可能用送出的照片改進產品；介意的話不要使用 AI 判讀，自己記錄即可。' : 'AI 判讀僅供參考，可以在「今日」頁面自行修改。'}</p>
+
+        <section class="group">
+          <div class="group-head">備註</div>
+          <div class="row"><textarea data-bind="face-notes" placeholder="例：素顏、剛洗完臉、生理期第 2 天">${esc(f.notes)}</textarea></div>
+        </section>
+        ${f.id ? '<button class="btn block danger" data-action="delete-face">刪除這張自拍</button>' : ''}
+      </div>`;
+  },
+
+  foods() {
+    const lib = foodLibrary();
+    return `<div class="sheet-bar"><span style="min-width:56px"></span><b>常吃的食物</b><button class="primary" data-action="close-sheet">完成</button></div>
+      <div class="sheet-body">
+        <section class="group">
+          ${lib.length ? lib.map((f) => `<div class="row">
+              <span class="grow">${esc(f.name)}<small>${esc(f.portion || '')} ${Number(f.calories) || 0} kcal・吃過 ${f.count} 次${f.allergens.length ? `・⚠︎ ${esc(f.allergens.join('、'))}` : ''}</small></span>
+              <button class="icon danger" data-action="hide-food" data-value="${esc(f.name)}" aria-label="從清單移除">✕</button>
+            </div>`).join('') : '<div class="row muted">儲存過餐點後，吃過的食物會自動出現在這裡</div>'}
+        </section>
+        <p class="foot">清單由過去的餐點自動整理，新增餐點時可以直接點選。按 ✕ 只會從清單隱藏，不會刪除過去的紀錄。</p>
+        ${S.hiddenFoods.length ? `<section class="group"><div class="group-head">已隱藏（${S.hiddenFoods.length}）</div>
+          ${S.hiddenFoods.map((n) => `<div class="row"><span class="grow muted">${esc(n)}</span><button class="btn" data-action="unhide-food" data-value="${esc(n)}">恢復</button></div>`).join('')}</section>` : ''}
       </div>`;
   },
 
@@ -563,6 +720,40 @@ async function saveProduct() {
   toast('已儲存');
 }
 
+async function openFaceEditor(id) {
+  const f = S.faces.find((x) => x.id === id);
+  const photo = (await db.get('photos', id))?.data || f.thumb;
+  faceEditor = { ...structuredClone(f), photo };
+  openSheet('face');
+}
+
+async function saveFace() {
+  const f = faceEditor;
+  const id = f.id || uid();
+  const face = {
+    id, day: f.day, time: f.time, notes: f.notes.trim(), ai: f.ai || null,
+    thumb: f.thumb || await resizeImage(f.photo, 360, 0.7), updatedAt: Date.now(),
+  };
+  await db.put('faces', face);
+  if (!f.id) await db.put('photos', { id, data: f.photo });
+  upsert(S.faces, face);
+  closeSheet();
+  render();
+  toast('已儲存');
+}
+
+// 複製前一天的餐點（不含照片），時間與餐別沿用
+async function copyMeals(fromDay, toDay) {
+  for (const m of mealsOn(fromDay)) {
+    const meal = {
+      id: uid(), day: toDay, time: m.time, type: m.type, thumb: null, hasPhoto: false,
+      items: m.items.map(cloneItem), notes: m.notes, summary: m.summary, updatedAt: Date.now(),
+    };
+    await db.put('meals', meal);
+    S.meals.push(meal);
+  }
+}
+
 function openFileSheet(blob, filename, isBackup = false) {
   openSheet('file', { blob, filename, isBackup });
 }
@@ -647,6 +838,78 @@ const ACTIONS = {
     }
   },
 
+  'copy-prev-meals': async (t) => {
+    const from = t.dataset.from;
+    const n = mealsOn(from).length;
+    const has = mealsOn(S.day).length;
+    if (!confirm(`要把 ${fmtMd(from)} 的 ${n} 餐複製到 ${fmtMd(S.day)} 嗎？${has ? `\n（${fmtMd(S.day)} 已經有 ${has} 餐，會另外新增，不會覆蓋）` : ''}\n照片不會複製，之後可以個別修改。`)) return;
+    await copyMeals(from, S.day);
+    render();
+    toast(`已複製 ${n} 餐`);
+  },
+  'copy-prev-meal': (t) => {
+    const m = S.meals.find((x) => x.id === t.dataset.id);
+    const have = editor.items.map((i) => i.name.trim());
+    editor.items.push(...m.items.filter((i) => !have.includes(i.name.trim())).map(cloneItem));
+    if (!editor.notes && m.notes) editor.notes = m.notes;
+    renderSheet();
+  },
+  'pick-food': (t) => {
+    const name = t.dataset.value;
+    const idx = editor.items.findIndex((i) => i.name.trim() === name);
+    if (idx >= 0) editor.items.splice(idx, 1);
+    else editor.items.push(cloneItem(foodLibrary().find((f) => f.name === name)));
+    renderSheet();
+  },
+  'open-foods': () => openSheet('foods'),
+  'hide-food': async (t) => {
+    S.hiddenFoods = uniqSorted([...S.hiddenFoods, t.dataset.value]);
+    await db.setSetting('hiddenFoods', S.hiddenFoods);
+    renderSheet();
+    render();
+  },
+  'unhide-food': async (t) => {
+    S.hiddenFoods = S.hiddenFoods.filter((n) => n !== t.dataset.value);
+    await db.setSetting('hiddenFoods', S.hiddenFoods);
+    renderSheet();
+    render();
+  },
+
+  'edit-face': (t) => openFaceEditor(t.dataset.id),
+  'save-face': () => saveFace().catch(fail),
+  'delete-face': async () => {
+    if (!confirm('確定要刪除這張自拍嗎？')) return;
+    await db.del('faces', faceEditor.id);
+    await db.del('photos', faceEditor.id);
+    removeWhere(S.faces, (f) => f.id === faceEditor.id);
+    closeSheet();
+    render();
+  },
+  'analyze-face': async () => {
+    if (S.aiBusy) return;
+    if (!aiKey()) return needKey();
+    S.aiBusy = true;
+    renderSheet();
+    const target = faceEditor;
+    try {
+      target.ai = { ...(await aiFace(target.photo)), at: Date.now() };
+    } catch (err) {
+      fail(err);
+    } finally {
+      S.aiBusy = false;
+      if (sheet?.kind === 'face' && faceEditor === target) renderSheet();
+    }
+  },
+  'apply-face-ai': async () => {
+    const f = faceEditor, ai = f.ai;
+    const old = checkOf(f.day);
+    const check = { day: f.day, severity: ai.severity, areas: ai.areas, kinds: ai.kinds, notes: old?.notes || '' };
+    await db.put('skinChecks', check);
+    upsert(S.skinChecks, check, 'day');
+    render();
+    toast(`已更新 ${fmtMd(f.day)} 的臉部狀況`);
+  },
+
   'toggle-care': (t) => {
     const name = t.dataset.name;
     saveCareLog(t.dataset.period, (names) => (names.includes(name) ? names.filter((n) => n !== name) : [...names, name]));
@@ -654,6 +917,11 @@ const ACTIONS = {
   'apply-routine': (t) => {
     const period = t.dataset.period;
     saveCareLog(period, (names) => uniqSorted([...names, ...S.products.filter((p) => p.isActive && isRoutine(p, period)).map((p) => p.name)]));
+  },
+  'copy-prev-care': (t) => {
+    const prev = careLogOf(t.dataset.from, t.dataset.period);
+    saveCareLog(t.dataset.period, () => [...prev.productNames]);
+    toast(`已套用 ${fmtMd(t.dataset.from)} 的${t.dataset.period}保養`);
   },
 
   'skin-set': (t) => saveCheck({ day: S.day, severity: Number(t.dataset.sev), areas: [], kinds: [], notes: '' }),
@@ -831,6 +1099,8 @@ const ACTIONS = {
 const INPUTS = {
   'meal-hint': (t) => { editor.hint = t.value; },
   'meal-notes': (t) => { editor.notes = t.value; },
+  'food-filter': (t) => { editor.filter = t.value; $('#food-lib').innerHTML = foodLibChips(editor); },
+  'face-notes': (t) => { faceEditor.notes = t.value; },
   'item': (t) => {
     const item = editor.items[Number(t.dataset.idx)];
     item[t.dataset.field] = t.dataset.field === 'calories' ? Number(t.value) || 0 : t.value;
@@ -854,6 +1124,17 @@ const CHANGES = {
       toast('無法讀取這張照片，請換一張試試');
     }
   },
+  'face-photo': async (t) => {
+    const file = t.files?.[0];
+    t.value = '';
+    if (!file) return;
+    let photo;
+    try { photo = await resizeImage(file); } catch { return toast('無法讀取這張照片，請換一張試試'); }
+    faceEditor = { id: null, day: S.tab === 'today' ? S.day : todayKey(), time: nowTime(), photo, thumb: null, notes: '', ai: null };
+    openSheet('face');
+  },
+  'face-day': (t) => { if (t.value) { faceEditor.day = t.value; renderSheet(); } },
+  'face-time': (t) => { if (t.value) faceEditor.time = t.value; },
   'item-multi': (t) => {
     editor.items[Number(t.dataset.idx)][t.dataset.field] = [...t.selectedOptions].map((o) => o.value);
     renderSheet();

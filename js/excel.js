@@ -48,11 +48,13 @@ export function buildExcel(records, analysis, products) {
 
   const skin = {
     name: '肌膚狀況',
-    header: ['日期', '是否長痘', '嚴重程度', '部位', '類型', '備註'],
-    widths: [12, 9, 9, 20, 20, 30],
-    rows: records.filter((r) => r.check).map((r) => {
+    header: ['日期', '是否長痘', '嚴重程度', '部位', '類型', '備註', '自拍張數', 'AI 膚況描述'],
+    widths: [12, 9, 9, 20, 20, 30, 9, 40],
+    rows: records.filter((r) => r.check || r.faces.length).map((r) => {
       const c = r.check;
-      return [fmtYmd(r.day), c.severity > 0 ? '是' : '否', SEVERITIES[c.severity], c.areas.join('、'), c.kinds.join('、'), c.notes || ''];
+      const ai = r.faces.map((f) => f.ai?.summary).filter(Boolean).join('\n');
+      return [fmtYmd(r.day), c ? (c.severity > 0 ? '是' : '否') : '未記錄', c ? SEVERITIES[c.severity] : '',
+        c?.areas.join('、') ?? '', c?.kinds.join('、') ?? '', c?.notes ?? '', r.faces.length, ai];
     }),
   };
 

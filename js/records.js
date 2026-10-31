@@ -5,9 +5,10 @@ export const mealCalories = (meal) => sum(meal.items, (i) => Number(i.calories) 
 export const mealAllergens = (meal) => uniqSorted(meal.items.flatMap((i) => i.allergens));
 export const mealNames = (meal) => meal.items.map((i) => i.name).filter(Boolean).join('、');
 
-export function buildRecords(start, end, { meals, careLogs, skinChecks }) {
+export function buildRecords(start, end, { meals, careLogs, skinChecks, faces = [] }) {
   const [first, last] = start <= end ? [start, end] : [end, start];
   const mealsByDay = groupBy(meals, (m) => m.day);
+  const facesByDay = groupBy(faces, (f) => f.day);
   const logsByDay = groupBy(careLogs, (l) => l.day);
   const checkByDay = new Map(skinChecks.map((c) => [c.day, c]));
 
@@ -21,10 +22,11 @@ export function buildRecords(start, end, { meals, careLogs, skinChecks }) {
       morning: logs.find((l) => l.period === '早上')?.productNames || [],
       evening: logs.find((l) => l.period === '晚上')?.productNames || [],
       check: checkByDay.get(day) || null,
+      faces: (facesByDay.get(day) || []).sort((a, b) => a.time.localeCompare(b.time)),
     };
     record.calories = sum(dayMeals, mealCalories);
     record.allergens = uniqSorted(dayMeals.flatMap(mealAllergens));
-    if (dayMeals.length || record.morning.length || record.evening.length || record.check) records.push(record);
+    if (dayMeals.length || record.morning.length || record.evening.length || record.check || record.faces.length) records.push(record);
   }
   return records;
 }

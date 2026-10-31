@@ -147,6 +147,15 @@ export async function buildPDF({ records, start, end, analysis, includePhotos, g
       if (c.notes) line += `　備註：${c.notes}`;
       await write(line, { size: 21, color: breakout ? PINK : '#555', indent: 24, after: 4 });
     }
+    if (r.faces.length) {
+      const aiNotes = r.faces.map((f) => f.ai?.summary).filter(Boolean);
+      await write(`臉部自拍 ${r.faces.length} 張${aiNotes.length ? `　AI：${aiNotes.join('；')}` : ''}`, { size: 21, color: '#555', indent: 24, after: 4 });
+      if (includePhotos) {
+        const photos = [];
+        for (const f of r.faces) { const p = await getPhoto(f.id); if (p) photos.push(p); }
+        if (photos.length) { y += 4; await thumbnails(photos); }
+      }
+    }
     await rule();
   }
 
