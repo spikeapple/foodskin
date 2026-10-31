@@ -6,7 +6,7 @@ import {
 } from './util.js';
 import { ALLERGENS, ACNE_TAGS, FACE_AREAS, ACNE_KINDS, SEVERITIES, MEAL_TYPES, PERIODS, CATEGORIES, guessMealType } from './vocab.js';
 import { analyzeMeal, analyzeTriggers } from './claude.js';
-import { analyzeMealGemini, analyzeTriggersGemini, GEMINI_DEFAULT_MODEL } from './gemini.js';
+import { analyzeMealGemini, analyzeTriggersGemini, listGeminiModels, GEMINI_DEFAULT_MODEL } from './gemini.js';
 import { analyze, aiPrompt, levelOf } from './analyzer.js';
 import { buildRecords, mealCalories, mealAllergens, mealNames } from './records.js';
 import { buildExcel } from './excel.js';
@@ -426,11 +426,14 @@ const SHEETS = {
           <div class="row">${seg(Object.values(PROVIDERS), PROVIDERS[S.provider], 'set-provider')}</div>
           ${S.provider === 'gemini' ? `
           <div class="row col"><span class="small muted">Gemini API Key</span>
-            <input type="password" autocomplete="off" autocapitalize="off" spellcheck="false" data-bind="draft" data-field="geminiKey" value="${esc(S.geminiKey)}" placeholder="AIza..."></div>
+            <input type="password" autocomplete="off" autocapitalize="off" spellcheck="false" data-bind="draft" data-field="geminiKey" value="${esc(drafts.geminiKey ?? S.geminiKey)}" placeholder="AIza..."></div>
           <div class="row col"><span class="small muted">模型（通常不用改）</span>
-            <input autocomplete="off" autocapitalize="off" spellcheck="false" data-bind="draft" data-field="geminiModel" value="${esc(S.geminiModel)}" placeholder="${GEMINI_DEFAULT_MODEL}"></div>` : `
+            <input autocomplete="off" autocapitalize="off" spellcheck="false" data-bind="draft" data-field="geminiModel" value="${esc(drafts.geminiModel ?? S.geminiModel)}" placeholder="${GEMINI_DEFAULT_MODEL}"></div>
+          <button class="row action small" data-action="gemini-models">${spinnerLabel(sheet.busy === 'gemini-models', '🔍 查詢可用模型', '查詢中…')}</button>
+          ${sheet.models ? `<div class="row col"><span class="small muted">點選要使用的模型（建議選名稱有 flash 的）</span>
+            <div class="chips">${chips(sheet.models, [S.geminiModel || GEMINI_DEFAULT_MODEL], 'pick-model')}</div></div>` : ''}` : `
           <div class="row col"><span class="small muted">Claude API Key</span>
-            <input type="password" autocomplete="off" autocapitalize="off" spellcheck="false" data-bind="draft" data-field="apiKey" value="${esc(S.apiKey)}" placeholder="sk-ant-..."></div>`}
+            <input type="password" autocomplete="off" autocapitalize="off" spellcheck="false" data-bind="draft" data-field="apiKey" value="${esc(drafts.apiKey ?? S.apiKey)}" placeholder="sk-ant-..."></div>`}
           <div class="row two">
             <button class="btn pink" data-action="save-api-key">儲存</button>
             ${aiKey() ? '<button class="btn danger" data-action="clear-api-key">移除金鑰</button>' : ''}
@@ -720,7 +723,10 @@ const ACTIONS = {
     if (shared && sheet.isBackup) { await markBackedUp(); S.lastBackup = new Date().toISOString(); render(); }
   },
 
-  'open-settings': () => openSheet('settings'),
+  'open-settings': () => {
+    for (const f of ['apiKey', 'geminiKey', 'geminiModel']) delete drafts[f];
+    openSheet('settings');
+  },
   'set-provider': async (t) => {
     S.provider = Object.keys(PROVIDERS).find((k) => PROVIDERS[k] === t.dataset.value) || 'gemini';
     await db.setSetting('aiProvider', S.provider);
@@ -739,6 +745,19 @@ const ACTIONS = {
     renderSheet();
     render();
     toast(aiKey() ? 'API Key 已儲存' : '已清除');
+  },
+  'gemini-models': () => busy('gemini-models', async () => {
+    const key = (drafts.geminiKey ?? S.geminiKey).trim();
+    const models = await listGeminiModels(key);
+    if (!models.length) throw new Error('這把金鑰查不到可用的 Gemini 模型。');
+    sheet.models = models;
+  }),
+  'pick-model': async (t) => {
+    S.geminiModel = t.dataset.value === GEMINI_DEFAULT_MODEL ? '' : t.dataset.value;
+    drafts.geminiModel = S.geminiModel;
+    await db.setSetting('geminiModel', S.geminiModel);
+    renderSheet();
+    toast(`已改用 ${t.dataset.value}`);
   },
   'clear-api-key': async () => {
     const field = S.provider === 'gemini' ? 'geminiKey' : 'apiKey';

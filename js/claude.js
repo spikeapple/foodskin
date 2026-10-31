@@ -109,7 +109,9 @@ export function mealPrompt(photoDataURL, hint) {
 /** 把 AI 回傳的 JSON 文字轉成 App 的餐點格式（Claude 與 Gemini 共用） */
 export function parseMeal(json) {
   let parsed;
-  try { parsed = JSON.parse(json); } catch { throw new Error('無法解析 AI 回傳的資料，請再試一次。'); }
+  // 沒有強制格式時，模型可能用 ```json 包起來，只取第一個 { 到最後一個 }
+  const body = json.slice(json.indexOf('{'), json.lastIndexOf('}') + 1);
+  try { parsed = JSON.parse(body); } catch { throw new Error('無法解析 AI 回傳的資料，請再試一次。'); }
   return {
     summary: parsed.summary || '',
     items: (parsed.foods || []).map((f) => ({
