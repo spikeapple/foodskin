@@ -18,14 +18,20 @@ export async function isLinked() {
   return Boolean(await db.getSetting('dropboxRefresh'));
 }
 
-/** 第 1 步：產生 PKCE 驗證碼並開啟 Dropbox 授權頁 */
-export async function startLink(appKey) {
-  const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
+/**
+ * 第 1 步：產生 Dropbox 授權頁網址。
+ * iPhone 主畫面 App 會擋掉 await 之後才呼叫的 window.open，所以事先算好網址、做成一般連結讓使用者點。
+ * 驗證碼沿用已存的那一組，App 被系統重新載入後，之前拿到的授權碼仍然有效。
+ */
+export async function authUrl(appKey) {
+  let verifier = await db.getSetting('dropboxVerifier');
+  if (!verifier) {
+    verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
+    await db.setSetting('dropboxVerifier', verifier);
+  }
   const challenge = b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))));
-  await db.setSetting('dropboxVerifier', verifier);
-  const url = `${AUTH_URL}?client_id=${encodeURIComponent(appKey)}&response_type=code`
+  return `${AUTH_URL}?client_id=${encodeURIComponent(appKey)}&response_type=code`
     + `&code_challenge=${challenge}&code_challenge_method=S256&token_access_type=offline`;
-  window.open(url, '_blank');
 }
 
 /** 第 2 步：用貼回來的授權碼換取權杖 */
@@ -49,7 +55,8 @@ export async function finishLink(appKey, code) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.refresh_token) {
     if (data.error === 'invalid_grant') {
-      throw new Error('授權碼無效或已過期。授權碼只能用一次，而且要用「最後一次」按①開啟的頁面上的碼，請重新按①再試。');
+      await db.setSetting('dropboxVerifier', null);  // 換一組新的驗證碼重來
+      throw new Error('授權碼無效或已過期（每個授權碼只能用一次）。請重新按①，取得新的授權碼再貼上。');
     }
     if (data.error === 'invalid_client') throw new Error('Dropbox App Key 不正確，請確認設定。');
     throw new Error(`Dropbox 連結失敗（${res.status}）：${data.error_description || data.error || '未知錯誤'}`);

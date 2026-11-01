@@ -23,7 +23,7 @@ const S = {
   tab: 'today',
   day: todayKey(),
   meals: [], products: [], careLogs: [], skinChecks: [], faces: [], hiddenFoods: [], supplements: [], suppLogs: [],
-  provider: 'gemini', apiKey: '', geminiKey: '', geminiModel: '', lastBackup: null, dropboxKey: '', dropboxLinked: false, dropboxPending: false,
+  provider: 'gemini', apiKey: '', geminiKey: '', geminiModel: '', lastBackup: null, dropboxKey: '', dropboxLinked: false,
   range: 60, aiText: '', aiTextRange: 0, aiBusy: false, triggerBusy: false,
   exportStart: addDays(todayKey(), -29), exportEnd: todayKey(),
   includePhotos: true, includeAnalysis: true, exporting: false,
@@ -679,10 +679,12 @@ const SHEETS = {
       dbx = `<div class="row"><input data-bind="draft" data-field="dropboxKey" placeholder="Dropbox App Key"></div>
         <button class="row action" data-action="dbx-save-key">儲存 App Key</button>`;
     } else if (!S.dropboxLinked) {
-      dbx = `<button class="row action" data-action="dbx-link">① 連結 Dropbox（會開啟登入頁）</button>
-        ${S.dropboxPending ? `<div class="row"><input data-bind="draft" data-field="dropboxCode" placeholder="② 貼上 Dropbox 顯示的授權碼"></div>
-          <div class="row small muted">授權碼是按「允許」後，Dropbox 頁面上顯示的一長串英數字（不是開發者網站上的 App key 或密碼）。</div>
-          <button class="row action" data-action="dbx-finish">③ 完成連結</button>` : ''}
+      dbx = `${sheet.dbxUrl
+          ? `<a class="row action" href="${esc(sheet.dbxUrl)}" target="_blank" rel="noopener">① 連結 Dropbox（會開啟登入頁）</a>`
+          : '<div class="row muted"><span class="spinner"></span> 準備連結…</div>'}
+        <div class="row"><input data-bind="draft" data-field="dropboxCode" value="${esc(drafts.dropboxCode || '')}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="② 貼上 Dropbox 顯示的授權碼"></div>
+        <div class="row small muted">在 Dropbox 頁面按「允許」後，複製畫面上那一長串英數字，回到這裡貼上（不是開發者網站上的 App key 或密碼）。</div>
+        <button class="row action" data-action="dbx-finish">${spinnerLabel(sheet.busy === 'dbx-finish', '③ 完成連結', '連結中…')}</button>
         ${CONFIG.dropboxAppKey ? '' : '<button class="row small muted" data-action="dbx-clear-key">更換 App Key</button>'}`;
     } else {
       dbx = `<button class="row action" data-action="dbx-backup">${spinnerLabel(sheet.busy === 'dbx-backup', '☁️ 立即備份到 Dropbox', '上傳中…')}</button>
@@ -957,6 +959,15 @@ async function afterRestore(exportedAt) {
   toast(`已還原${exportedAt ? `（備份時間 ${new Date(exportedAt).toLocaleString('zh-TW')}）` : ''}`, 3500);
 }
 
+// 設定頁打開時先算好 Dropbox 授權網址（見 dropbox.authUrl 的說明）
+async function prepareDropboxLink() {
+  if (!S.dropboxKey || S.dropboxLinked || sheet?.kind !== 'settings') return;
+  try {
+    const url = await dropbox.authUrl(S.dropboxKey);
+    if (sheet?.kind === 'settings') { sheet.dbxUrl = url; renderSheet(); }
+  } catch (err) { fail(err); }
+}
+
 async function busy(key, fn) {
   if (sheet?.busy) return;
   sheet.busy = key;
@@ -1218,9 +1229,10 @@ const ACTIONS = {
     if (shared && sheet.isBackup) { await markBackedUp(); S.lastBackup = new Date().toISOString(); render(); }
   },
 
-  'open-settings': () => {
+  'open-settings': async () => {
     for (const f of ['apiKey', 'geminiKey', 'geminiModel']) delete drafts[f];
     openSheet('settings');
+    await prepareDropboxLink();
   },
   'set-provider': async (t) => {
     S.provider = Object.keys(PROVIDERS).find((k) => PROVIDERS[k] === t.dataset.value) || 'gemini';
@@ -1271,27 +1283,26 @@ const ACTIONS = {
     if (!key) return toast('請輸入 App Key');
     S.dropboxKey = key;
     await db.setSetting('dropboxAppKey', key);
+    await db.setSetting('dropboxVerifier', null);
     renderSheet();
+    await prepareDropboxLink();
   },
   'dbx-clear-key': async () => {
     S.dropboxKey = '';
-    S.dropboxPending = false;
     await db.setSetting('dropboxAppKey', '');
     renderSheet();
   },
-  'dbx-link': async () => {
-    try {
-      await dropbox.startLink(S.dropboxKey);
-      S.dropboxPending = true;
-      renderSheet();
-    } catch (err) { fail(err); }
-  },
   'dbx-finish': () => busy('dbx-finish', async () => {
     const code = (drafts.dropboxCode || '').trim();
-    if (!code) throw new Error('請貼上授權碼');
-    await dropbox.finishLink(S.dropboxKey, code);
+    if (!code) throw new Error('請先按①取得授權碼，再貼到②');
+    try {
+      await dropbox.finishLink(S.dropboxKey, code);
+    } catch (err) {
+      drafts.dropboxCode = '';
+      sheet.dbxUrl = await dropbox.authUrl(S.dropboxKey);  // 授權碼失效時會換新的連結
+      throw err;
+    }
     S.dropboxLinked = true;
-    S.dropboxPending = false;
     drafts.dropboxCode = '';
     toast('已連結 Dropbox');
   }),
@@ -1319,6 +1330,7 @@ const ACTIONS = {
     await dropbox.unlink();
     S.dropboxLinked = false;
     renderSheet();
+    await prepareDropboxLink();
   },
 };
 
