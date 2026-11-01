@@ -681,6 +681,7 @@ const SHEETS = {
     } else if (!S.dropboxLinked) {
       dbx = `<button class="row action" data-action="dbx-link">① 連結 Dropbox（會開啟登入頁）</button>
         ${S.dropboxPending ? `<div class="row"><input data-bind="draft" data-field="dropboxCode" placeholder="② 貼上 Dropbox 顯示的授權碼"></div>
+          <div class="row small muted">授權碼是按「允許」後，Dropbox 頁面上顯示的一長串英數字（不是開發者網站上的 App key 或密碼）。</div>
           <button class="row action" data-action="dbx-finish">③ 完成連結</button>` : ''}
         ${CONFIG.dropboxAppKey ? '' : '<button class="row small muted" data-action="dbx-clear-key">更換 App Key</button>'}`;
     } else {

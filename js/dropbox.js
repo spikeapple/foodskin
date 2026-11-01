@@ -32,6 +32,10 @@ export async function startLink(appKey) {
 export async function finishLink(appKey, code) {
   const verifier = await db.getSetting('dropboxVerifier');
   if (!verifier) throw new Error('請先按「連結 Dropbox」。');
+  // 授權碼約 40 多個字元；開發者網站上的 App key／App secret 只有 15 個字元，常被誤貼
+  if (code.replace(/\s+/g, '').length < 25) {
+    throw new Error('這不是授權碼（看起來像 App key 或 App 密碼）。請按①，在 Dropbox 頁面按「允許」後，複製畫面上顯示的那一長串授權碼。');
+  }
   let res;
   try {
     res = await fetch(TOKEN_URL, {
