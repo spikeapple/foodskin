@@ -32,12 +32,24 @@ export async function startLink(appKey) {
 export async function finishLink(appKey, code) {
   const verifier = await db.getSetting('dropboxVerifier');
   if (!verifier) throw new Error('請先按「連結 Dropbox」。');
-  const res = await fetch(TOKEN_URL, {
-    method: 'POST',
-    body: new URLSearchParams({ code: code.trim(), grant_type: 'authorization_code', code_verifier: verifier, client_id: appKey }),
-  });
+  let res;
+  try {
+    res = await fetch(TOKEN_URL, {
+      method: 'POST',
+      // 複製時常夾帶空白或換行，全部去掉
+      body: new URLSearchParams({ code: code.replace(/\s+/g, ''), grant_type: 'authorization_code', code_verifier: verifier, client_id: appKey }),
+    });
+  } catch {
+    throw new Error('無法連線到 Dropbox，請確認網路。');
+  }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.refresh_token) throw new Error('授權碼無效或已過期，請重新按「連結 Dropbox」。');
+  if (!res.ok || !data.refresh_token) {
+    if (data.error === 'invalid_grant') {
+      throw new Error('授權碼無效或已過期。授權碼只能用一次，而且要用「最後一次」按①開啟的頁面上的碼，請重新按①再試。');
+    }
+    if (data.error === 'invalid_client') throw new Error('Dropbox App Key 不正確，請確認設定。');
+    throw new Error(`Dropbox 連結失敗（${res.status}）：${data.error_description || data.error || '未知錯誤'}`);
+  }
   await saveToken(data);
   await db.setSetting('dropboxRefresh', data.refresh_token);
   await db.setSetting('dropboxVerifier', null);
@@ -82,6 +94,10 @@ async function call(appKey, url, { arg, body, json } = {}) {
   }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    if (text.includes('missing_scope')) {
+      throw new Error('Dropbox App 的權限沒有設定完成：請到開發者網站 Permissions 勾選 files.metadata.read、files.content.write、files.content.read 並按 Submit，再到 App 中斷連結後重新連結。');
+    }
+    if (res.status === 401) throw new Error('Dropbox 連結已失效，請中斷連結後重新連結。');
     throw new Error(`Dropbox 錯誤（${res.status}）${text.slice(0, 120)}`);
   }
   return res;

@@ -2,5 +2,5 @@
 // 填了之後，你和家人只要在 App 裡按「連結 Dropbox」登入自己的帳號即可；
 // 留空的話，也可以在 App 的設定頁手動輸入。
 export const CONFIG = {
-  dropboxAppKey: '',
+  dropboxAppKey: 'hug654rww9q9ky7',
 };
