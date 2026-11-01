@@ -1,5 +1,5 @@
 // 直接從瀏覽器呼叫 Claude Messages API（每位使用者用自己的 API Key）
-import { ALLERGENS, ACNE_TAGS, FACE_AREAS, ACNE_KINDS } from './vocab.js';
+import { ALLERGENS, ACNE_TAGS, FACE_AREAS, ACNE_KINDS, CATEGORIES } from './vocab.js';
 
 const ENDPOINT = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-opus-5-5';
@@ -15,8 +15,9 @@ export const TRIGGER_SYSTEM = `你是飲食與保養紀錄的分析助理。使�
 請用繁體中文、條列清楚地回答：
 1. 最可能誘發痘痘的飲食（說明依據：出現在爆痘前幾天、出現頻率、與無痘日的差異）。
 2. 保養品是否可能是原因（新產品開始使用的時間、可能致粉刺成分、使用與爆痘的時間關係）。
-3. 其他可能的干擾因素（備註中的作息、生理期、壓力等）。
-4. 接下來兩週可以怎麼驗證（例如一次只停一樣食物或產品）。
+3. 保健食品是否可能有關（例如乳清蛋白、維生素 B12、碘、DHEA 等常被討論的成分，以及開始服用的時間）。若沒有保健食品紀錄就略過。
+4. 其他可能的干擾因素（備註中的作息、生理期、壓力等）。
+5. 接下來兩週可以怎麼驗證（例如一次只停一樣食物或產品）。
 資料量少時請直接說明推論可信度有限。你不是醫師，不做醫療診斷；若痘痘嚴重、反覆發炎或疼痛，請建議就醫。
 不要使用 Markdown 標題或表格，用簡單的條列即可。`;
 
@@ -75,6 +76,69 @@ export function parseFace(json) {
     kinds: (p.kinds || []).filter((k) => ACNE_KINDS.includes(k)),
     summary: p.summary || '',
   };
+}
+
+// ---------- 拍包裝辨識：保養品與保健食品共用一套流程 ----------
+const RISKS = ['低', '中', '高', '無法判斷'];
+const itemSchema = (extra) => ({
+  type: 'object',
+  additionalProperties: false,
+  required: ['name', 'brand', ...Object.keys(extra), 'ingredients', 'acne_risk', 'flags', 'summary'],
+  properties: {
+    name: { type: 'string' },
+    brand: { type: 'string' },
+    ...extra,
+    ingredients: { type: 'string' },
+    acne_risk: { type: 'string', enum: RISKS },
+    flags: { type: 'array', items: { type: 'string' } },
+    summary: { type: 'string' },
+  },
+});
+
+export const ITEM_AI = {
+  product: {
+    system: `你是保養品成分分析助理，協助使用者建立保養品清單。照片是保養品的包裝、瓶身或成分標示。請：
+1. 辨識產品名稱（name）與品牌（brand），看不出來就回空字串。
+2. category 只能從清單中選：${CATEGORIES.join('、')}。
+3. ingredients：照片上看得到的全成分，照原文抄寫（中文或英文都可，用逗號分隔）；看不到成分表就回空字串，不要自己編造。
+4. acne_risk：以看得到的成分評估「對容易長痘的肌膚」的風險；沒有成分資訊時回「無法判斷」。
+5. flags：可能致粉刺、致痘或容易刺激的成分名稱（例如椰子油、肉豆蔻酸異丙酯、羊毛脂、高濃度酒精、香精），沒有就回空陣列。
+6. summary：一到兩句繁體中文說明這個產品的用途與對痘痘肌需要留意的地方。
+不做醫療診斷。所有文字使用繁體中文（成分可保留原文）。`,
+    schema: itemSchema({ category: { type: 'string', enum: CATEGORIES } }),
+    example: '{"name":"產品名稱","brand":"品牌","category":"類別","ingredients":"成分","acne_risk":"低/中/高/無法判斷","flags":["…"],"summary":"說明"}',
+    prompt: '請辨識這個保養品並分析成分。',
+  },
+  supplement: {
+    system: `你是保健食品成分分析助理，協助使用者建立保健食品清單。照片是保健食品的包裝、瓶身或營養標示。請：
+1. 辨識產品名稱（name）與品牌（brand），看不出來就回空字串。
+2. dosage：包裝上的建議用法用量（例如「每日 1 顆，飯後」），看不到就回空字串。
+3. ingredients：主要成分與每份含量，照包裝抄寫；看不到就回空字串，不要自己編造。
+4. acne_risk：評估與痘痘的可能關聯；常被討論的有乳清蛋白、維生素 B12、碘（含海藻）、DHEA 或荷爾蒙相關成分、高劑量生物素等。沒有成分資訊時回「無法判斷」。
+5. flags：可能與痘痘有關或需要留意的成分名稱，以及常見過敏原（${ALLERGENS.join('、')}），沒有就回空陣列。
+6. summary：一到兩句繁體中文說明這個產品的主要用途與需要留意的地方。
+不做醫療診斷，不建議停藥或加量；有服用藥物或特殊狀況時提醒詢問醫師或藥師。所有文字使用繁體中文。`,
+    schema: itemSchema({ dosage: { type: 'string' } }),
+    example: '{"name":"產品名稱","brand":"品牌","dosage":"用法用量","ingredients":"成分","acne_risk":"低/中/高/無法判斷","flags":["…"],"summary":"說明"}',
+    prompt: '請辨識這個保健食品並分析成分。',
+  },
+};
+
+/** AI 回傳的 JSON 文字 → 產品欄位（Claude 與 Gemini 共用） */
+export function parseItem(kind, json) {
+  let p;
+  try { p = JSON.parse(json.slice(json.indexOf('{'), json.lastIndexOf('}') + 1)); } catch { throw new Error('無法解析 AI 回傳的資料，請再試一次。'); }
+  const out = {
+    name: (p.name || '').trim(),
+    brand: (p.brand || '').trim(),
+    ingredients: (p.ingredients || '').trim(),
+    risk: RISKS.includes(p.acne_risk) ? p.acne_risk : '無法判斷',
+    flags: Array.isArray(p.flags) ? p.flags.filter(Boolean) : [],
+    summary: p.summary || '',
+  };
+  if (kind === 'product') out.category = CATEGORIES.includes(p.category) ? p.category : '';
+  else out.dosage = (p.dosage || '').trim();
+  return out;
 }
 
 async function send(apiKey, body) {
@@ -172,6 +236,24 @@ export async function analyzeFace(apiKey, photoDataURL) {
     output_config: { effort: 'medium', format: { type: 'json_schema', schema: FACE_SCHEMA } },
   });
   return parseFace(json);
+}
+
+export async function analyzeItem(apiKey, kind, photoDataURL) {
+  const ai = ITEM_AI[kind];
+  const json = await send(apiKey, {
+    model: MODEL,
+    max_tokens: 16000,
+    system: ai.system,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: photoDataURL.split(',')[1] } },
+        { type: 'text', text: ai.prompt },
+      ],
+    }],
+    output_config: { effort: 'medium', format: { type: 'json_schema', schema: ai.schema } },
+  });
+  return parseItem(kind, json);
 }
 
 export function analyzeTriggers(apiKey, prompt) {

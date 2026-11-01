@@ -106,12 +106,12 @@ export async function buildPDF({ records, start, end, analysis, includePhotos, g
   if (analysis && analysis.onsets.length) {
     y += 12;
     await write(`可能的痘痘誘因（推論可信度：${analysis.confidence}）`, { size: 30, bold: true, after: 10 });
-    const suspects = [...analysis.diet.slice(0, 5), ...analysis.products.slice(0, 3)];
+    const suspects = [...analysis.diet.slice(0, 5), ...analysis.products.slice(0, 3), ...analysis.supplements.slice(0, 3)];
     if (!suspects.length) await write('沒有明顯可疑的項目', { indent: 24 });
     for (const s of suspects) {
       await write(`・[${s.kind}] ${s.name}　${levelOf(s.score).text}：長痘前 ${s.breakoutHits}/${s.breakoutTotal} 次、無痘日前 ${s.cleanHits}/${s.cleanTotal} 次`, { indent: 24 });
     }
-    for (const a of [...analysis.newProductAlerts, ...analysis.comedogenicHits]) {
+    for (const a of [...analysis.newProductAlerts, ...analysis.comedogenicHits, ...analysis.newSuppAlerts, ...analysis.suppHits]) {
       await write(`・${a}`, { indent: 24, color: '#555' });
     }
   }
@@ -139,6 +139,7 @@ export async function buildPDF({ records, start, end, analysis, includePhotos, g
     if (r.morning.length || r.evening.length) {
       await write(`保養　早：${r.morning.join('、') || '—'}　晚：${r.evening.join('、') || '—'}`, { size: 21, color: '#555', indent: 24, after: 4 });
     }
+    if (r.supps.length) await write(`保健食品　${r.supps.join('、')}`, { size: 21, color: '#555', indent: 24, after: 4 });
     if (r.check) {
       const c = r.check;
       let line = '肌膚　' + (c.severity > 0 ? `有長痘（${SEVERITIES[c.severity]}）` : '沒有長痘');

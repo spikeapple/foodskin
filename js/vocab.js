@@ -26,6 +26,14 @@ export const COMEDOGENIC = [
   ['亞麻籽油', '亞麻籽油'], ['linseed oil', '亞麻籽油'],
 ];
 
+// 保健食品中常被討論與痘痘有關的成分：[關鍵字, 顯示名稱]
+export const SUPP_ACNE = [
+  ['乳清', '乳清蛋白'], ['whey', '乳清蛋白'],
+  ['b12', '維生素 B12'], ['鈷胺', '維生素 B12'], ['cobalamin', '維生素 B12'],
+  ['碘', '碘'], ['iodine', '碘'], ['海藻', '碘（海藻）'], ['海帶', '碘（海藻）'], ['kelp', '碘（海藻）'],
+  ['dhea', 'DHEA'], ['去氫表雄固酮', 'DHEA'],
+];
+
 export function guessMealType(time) {
   const h = Number(time.slice(0, 2));
   if (h >= 4 && h < 10) return '早餐';

@@ -1,7 +1,7 @@
 // 直接從瀏覽器呼叫 Google Gemini API（Google AI Studio 的金鑰，有免費額度）
 import {
   MEAL_SYSTEM, TRIGGER_SYSTEM, MEAL_SCHEMA, mealPrompt, parseMeal,
-  FACE_SYSTEM, FACE_SCHEMA, FACE_PROMPT, parseFace,
+  FACE_SYSTEM, FACE_SCHEMA, FACE_PROMPT, parseFace, ITEM_AI, parseItem,
 } from './claude.js';
 
 export const GEMINI_DEFAULT_MODEL = 'gemini-3.8-flash';
@@ -135,6 +135,17 @@ export async function analyzeFaceGemini(apiKey, model, photoDataURL) {
     example: FACE_EXAMPLE,
   });
   return parseFace(json);
+}
+
+export async function analyzeItemGemini(apiKey, model, kind, photoDataURL) {
+  const ai = ITEM_AI[kind];
+  const json = await send(apiKey, model, {
+    system_instruction: { parts: [{ text: ai.system }] },
+    contents: [{ role: 'user', parts: [{ inline_data: { mime_type: 'image/jpeg', data: photoDataURL.split(',')[1] } }, { text: ai.prompt }] }],
+    generationConfig: { responseMimeType: 'application/json', responseSchema: toGeminiSchema(ai.schema) },
+    example: ai.example,
+  });
+  return parseItem(kind, json);
 }
 
 export function analyzeTriggersGemini(apiKey, model, prompt) {
