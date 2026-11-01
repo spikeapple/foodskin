@@ -1,5 +1,6 @@
 import { db } from './db.js';
 import { CONFIG } from './config.js';
+import { APP_VERSION } from './version.js';
 import {
   todayKey, nowTime, addDays, daysBetween, fmtDay, fmtMd, fmtYmd, compactDay,
   esc, uid, groupBy, sum, uniqSorted, resizeImage, shareOrDownload,
@@ -142,7 +143,7 @@ const TITLES = { today: '今日紀錄', meals: '飲食紀錄', products: '保養
 function render() {
   $('#title').textContent = S.tab === 'today' && S.day !== todayKey() ? `${fmtMd(S.day)} 紀錄` : TITLES[S.tab];
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.tab));
-  $('#view').innerHTML = VIEWS[S.tab]();
+  $('#view').innerHTML = updateBanner() + VIEWS[S.tab]();
 }
 
 function renderSheet(first = false) {
@@ -733,6 +734,8 @@ const SHEETS = {
 
         <section class="group">
           <div class="group-head">關於</div>
+          <div class="row kv"><span>版本</span><b>${esc(APP_VERSION)}</b></div>
+          <button class="row action small" data-action="check-update">🔄 檢查更新</button>
           <div class="row small muted">本 App 的熱量、過敏原與痘痘誘因皆為依紀錄推估的參考資訊，不能取代醫師或營養師的專業判斷。有嚴重過敏或痘痘反覆發炎，請就醫。</div>
         </section>
       </div>`;
@@ -1229,6 +1232,14 @@ const ACTIONS = {
     if (shared && sheet.isBackup) { await markBackedUp(); S.lastBackup = new Date().toISOString(); render(); }
   },
 
+  'check-update': async () => {
+    const latest = await latestVersion();
+    if (!latest) return toast('無法檢查更新，請確認網路');
+    if (latest === APP_VERSION) return toast(`已經是最新版（${APP_VERSION}）`);
+    toast('正在更新…');
+    location.reload();
+  },
+  'apply-update': () => location.reload(),
   'open-settings': async () => {
     for (const f of ['apiKey', 'geminiKey', 'geminiModel']) delete drafts[f];
     openSheet('settings');
@@ -1436,6 +1447,29 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && !sheet && S.tab === 'today' && S.day > todayKey()) { S.day = todayKey(); render(); }
 });
 
+// ---------- 新版檢查 ----------
+// 主畫面 App 常常只是從背景叫回來、不會重新載入，所以回到前景時比對伺服器上的版本號
+async function latestVersion() {
+  try {
+    const text = await (await fetch(`./js/version.js?t=${Date.now()}`, { cache: 'no-store' })).text();
+    return text.match(/APP_VERSION = '([^']+)'/)?.[1] || null;
+  } catch {
+    return null;
+  }
+}
+
+let lastUpdateCheck = 0;
+async function checkForUpdate() {
+  if (APP_VERSION === 'dev' || Date.now() - lastUpdateCheck < 60000) return;
+  lastUpdateCheck = Date.now();
+  const latest = await latestVersion();
+  if (latest && latest !== APP_VERSION && !S.updateReady) { S.updateReady = latest; render(); }
+}
+const updateBanner = () => (S.updateReady
+  ? `<div class="banner">✨ 有新版本（${esc(S.updateReady)}）<button class="btn" data-action="apply-update">立即更新</button></div>` : '');
+
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); });
+
 // ---------- 啟動 ----------
 async function init() {
   try {
@@ -1449,6 +1483,7 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
+  checkForUpdate();
 }
 
 init();
