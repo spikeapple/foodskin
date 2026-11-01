@@ -3,8 +3,14 @@ import { db, DATA_STORES } from './db.js';
 
 const pad = (n) => String(n).padStart(2, '0');
 
-export function backupFilename(d = new Date()) {
-  return `foodskin-backup-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
+/** 使用者名稱轉成可以當檔名／資料夾名的字串 */
+export const safeName = (s) => (s || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').trim().slice(0, 30);
+
+/** 檔名前面加上使用者名稱，例：小明_備份_20261101-0851.json */
+export const withUser = (user, name) => (safeName(user) ? `${safeName(user)}_${name}` : name);
+
+export function backupFilename(user, d = new Date()) {
+  return withUser(user, `備份_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`);
 }
 
 export async function makeBackup() {

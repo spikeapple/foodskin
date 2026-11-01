@@ -4,6 +4,7 @@
  * 連結流程不使用自動導回網址，而是讓使用者在 Dropbox 頁面按「允許」後複製授權碼貼回 App。
  * 這樣在 iPhone 主畫面 App（全螢幕模式）中也能穩定運作。
  * App 使用「App 資料夾」權限，只能讀寫 Dropbox/應用程式/<你的 App 名稱>/，看不到其他檔案。
+ * 檔案依使用者分資料夾：/<使用者>/備份/、/<使用者>/報告/（共用同一個 Dropbox 帳號也不會混在一起）。
  */
 import { db } from './db.js';
 
@@ -92,9 +93,12 @@ async function accessToken(appKey) {
   return data.access_token;
 }
 
+// HTTP 標頭只能放 ASCII，中文路徑要依 Dropbox 規定轉成 \uXXXX
+const headerJson = (obj) => JSON.stringify(obj).replace(/[\u007f-￿]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+
 async function call(appKey, url, { arg, body, json } = {}) {
   const headers = { Authorization: `Bearer ${await accessToken(appKey)}` };
-  if (arg) headers['Dropbox-API-Arg'] = JSON.stringify(arg);   // 檔名只用英數字，避免非 ASCII 標頭問題
+  if (arg) headers['Dropbox-API-Arg'] = headerJson(arg);
   if (json) headers['Content-Type'] = 'application/json';
   else if (body) headers['Content-Type'] = 'application/octet-stream';
   let res;
@@ -114,15 +118,23 @@ async function call(appKey, url, { arg, body, json } = {}) {
   return res;
 }
 
-export async function upload(appKey, filename, blob) {
-  await call(appKey, `${CONTENT}/files/upload`, { arg: { path: `/${filename}`, mode: 'overwrite', mute: true }, body: blob });
+/** 上傳到 App 資料夾內的路徑（例：/小明/報告/xxx.pdf），資料夾不存在會自動建立；回傳實際路徑 */
+export async function upload(appKey, path, blob) {
+  const res = await call(appKey, `${CONTENT}/files/upload`, { arg: { path, mode: 'overwrite', mute: true }, body: blob });
+  return (await res.json().catch(() => ({}))).path_display || path;
 }
 
-/** 列出 App 資料夾裡的備份檔（新的在前） */
+/** 列出 App 資料夾裡（含每個使用者的子資料夾）的備份檔，新的在前 */
 export async function listBackups(appKey) {
-  const res = await call(appKey, `${API}/files/list_folder`, { json: { path: '' } });
-  const data = await res.json();
-  return (data.entries || [])
+  let res = await call(appKey, `${API}/files/list_folder`, { json: { path: '', recursive: true } });
+  let data = await res.json();
+  const entries = [...(data.entries || [])];
+  while (data.has_more) {
+    res = await call(appKey, `${API}/files/list_folder/continue`, { json: { cursor: data.cursor } });
+    data = await res.json();
+    entries.push(...(data.entries || []));
+  }
+  return entries
     .filter((e) => e['.tag'] === 'file' && e.name.endsWith('.json'))
     .sort((a, b) => b.server_modified.localeCompare(a.server_modified));
 }

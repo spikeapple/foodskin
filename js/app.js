@@ -14,7 +14,7 @@ import { analyze, aiPrompt, levelOf } from './analyzer.js';
 import { buildRecords, mealCalories, mealAllergens, mealNames } from './records.js';
 import { buildExcel } from './excel.js';
 import { buildPDF } from './pdf.js';
-import { makeBackup, restoreBackup, markBackedUp, backupFilename } from './backup.js';
+import { makeBackup, restoreBackup, markBackedUp, backupFilename, safeName, withUser } from './backup.js';
 import * as dropbox from './dropbox.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -24,7 +24,7 @@ const S = {
   tab: 'today',
   day: todayKey(),
   meals: [], products: [], careLogs: [], skinChecks: [], faces: [], hiddenFoods: [], supplements: [], suppLogs: [],
-  provider: 'gemini', apiKey: '', geminiKey: '', geminiModel: '', lastBackup: null, dropboxKey: '', dropboxLinked: false,
+  userName: '', provider: 'gemini', apiKey: '', geminiKey: '', geminiModel: '', lastBackup: null, dropboxKey: '', dropboxLinked: false,
   range: 60, aiText: '', aiTextRange: 0, aiBusy: false, triggerBusy: false,
   exportStart: addDays(todayKey(), -29), exportEnd: todayKey(),
   includePhotos: true, includeAnalysis: true, exporting: false,
@@ -40,6 +40,7 @@ async function loadAll() {
   const [meals, products, careLogs, skinChecks, faces, supplements, suppLogs] = await Promise.all(stores.map((s) => db.all(s)));
   Object.assign(S, { meals, products, careLogs, skinChecks, faces, supplements, suppLogs });
   S.hiddenFoods = await db.getSetting('hiddenFoods', []);
+  S.userName = await db.getSetting('userName', '');
   S.apiKey = await db.getSetting('apiKey', '');
   S.geminiKey = await db.getSetting('geminiKey', '');
   S.geminiModel = await db.getSetting('geminiModel', '');
@@ -371,6 +372,15 @@ const VIEWS = {
         <button class="row action" data-action="export-pdf" ${S.exporting ? 'disabled' : ''}>${spinnerLabel(S.exporting === 'pdf', '📄 產生 PDF 報告', '產生中…')}</button>
         <button class="row action" data-action="export-excel" ${S.exporting ? 'disabled' : ''}>${spinnerLabel(S.exporting === 'excel', '📊 產生 Excel（.xlsx）', '產生中…')}</button>
       </section>
+
+      <section class="group">
+        <div class="group-head"><span>直接存到 Dropbox</span><span>${S.dropboxLinked && S.userName ? esc(`/${S.userName}/報告`) : ''}</span></div>
+        ${S.dropboxLinked ? `
+          <button class="row action" data-action="export-pdf-dbx" ${S.exporting ? 'disabled' : ''}>${spinnerLabel(S.exporting === 'pdf-dbx', '☁️ PDF 報告存到 Dropbox', '上傳中…')}</button>
+          <button class="row action" data-action="export-excel-dbx" ${S.exporting ? 'disabled' : ''}>${spinnerLabel(S.exporting === 'excel-dbx', '☁️ Excel 存到 Dropbox', '上傳中…')}</button>
+          ${S.userName ? '' : '<button class="row small" style="color:var(--orange)" data-action="open-settings">⚠︎ 請先到設定填寫使用者名稱 ›</button>'}`
+          : '<button class="row muted" data-action="open-settings">還沒連結 Dropbox，點這裡到設定連結 ›</button>'}
+      </section>
       <p class="foot">Excel 內含：每日總覽、飲食明細、保養紀錄、保健食品紀錄、肌膚狀況、誘因分析等工作表。產生後可以用分享選單存到「檔案」、Dropbox，或傳給別人。</p>
     `;
   },
@@ -696,6 +706,13 @@ const SHEETS = {
     return `<div class="sheet-bar"><span style="min-width:56px"></span><b>設定</b><button class="primary" data-action="close-sheet">完成</button></div>
       <div class="sheet-body">
         <section class="group">
+          <div class="group-head">使用者</div>
+          <div class="row"><span class="label">名稱</span><input data-bind="draft" data-field="userName" value="${esc(drafts.userName ?? S.userName)}" placeholder="例：Ivan、老婆"></div>
+          <button class="row action small" data-action="save-user">儲存名稱</button>
+        </section>
+        <p class="foot">報告與備份的檔名會加上這個名稱，Dropbox 裡也會依名稱分資料夾（/名稱/報告、/名稱/備份），兩個人共用同一個 Dropbox 也不會混在一起。</p>
+
+        <section class="group">
           <div class="group-head">AI 服務</div>
           <div class="row">${seg(Object.values(PROVIDERS), PROVIDERS[S.provider], 'set-provider')}</div>
           ${S.provider === 'gemini' ? `
@@ -747,6 +764,7 @@ const SHEETS = {
         <section class="group">
           <div class="row"><span class="grow"><b>${esc(sheet.filename)}</b><small>${(sheet.blob.size / 1024 / 1024).toFixed(2)} MB</small></span></div>
           <button class="row action" data-action="share-file">⬆️ 分享／儲存到「檔案」</button>
+          ${S.dropboxLinked ? `<button class="row action" data-action="file-to-dbx">${spinnerLabel(sheet.busy === 'file-to-dbx', `☁️ 存到 Dropbox${S.userName ? `（${esc(dbxFolder(sheet.isBackup))}）` : ''}`, '上傳中…')}</button>` : ''}
         </section>
         <p class="foot">在分享選單選「儲存到檔案」，就可以存到 iCloud 雲碟或 Dropbox；也可以直接用 LINE、Email 傳送。</p>
       </div>`;
@@ -757,12 +775,14 @@ const SHEETS = {
       <div class="sheet-body">
         <section class="group">
           <div class="group-head">選擇要還原的備份</div>
-          ${sheet.entries.length ? sheet.entries.slice(0, 20).map((f) => `
-            <button class="row" data-action="dbx-restore" data-path="${esc(f.path_lower)}">
-              <span class="grow">${esc(f.name)}<small>${new Date(f.server_modified).toLocaleString('zh-TW')}・${(f.size / 1024 / 1024).toFixed(2)} MB</small></span>›
-            </button>`).join('') : '<div class="row muted">Dropbox 裡還沒有備份檔</div>'}
+          ${sheet.entries.length ? sheet.entries.slice(0, 30).map((f) => {
+            const folder = f.path_display.split('/').slice(1, -1).join('/') || '（根目錄）';
+            return `<button class="row" data-action="dbx-restore" data-path="${esc(f.path_lower)}">
+              <span class="grow">${esc(f.name)}<small>📁 ${esc(folder)}・${new Date(f.server_modified).toLocaleString('zh-TW')}・${(f.size / 1024 / 1024).toFixed(2)} MB</small></span>›
+            </button>`;
+          }).join('') : '<div class="row muted">Dropbox 裡還沒有備份檔</div>'}
         </section>
-        <p class="foot">還原會用備份檔的內容取代這支手機目前的所有紀錄。</p>
+        <p class="foot">還原會用備份檔的內容取代這支手機目前的所有紀錄。請確認選的是自己名稱資料夾裡的備份。</p>
       </div>`;
   },
 };
@@ -929,24 +949,40 @@ function openFileSheet(blob, filename, isBackup = false) {
   openSheet('file', { blob, filename, isBackup });
 }
 
-async function exportReport(kind) {
+// Dropbox 依使用者分資料夾：/名稱/備份、/名稱/報告
+const dbxFolder = (isBackup) => `/${safeName(S.userName)}/${isBackup ? '備份' : '報告'}`;
+
+async function uploadToDropbox(blob, filename, isBackup) {
+  if (!S.dropboxLinked) throw new Error('請先到設定連結 Dropbox');
+  if (!safeName(S.userName)) throw new Error('請先到設定填寫「使用者名稱」，Dropbox 會依名稱分資料夾');
+  const path = await dropbox.upload(S.dropboxKey, `${dbxFolder(isBackup)}/${filename}`, blob);
+  if (isBackup) { await markBackedUp(); S.lastBackup = new Date().toISOString(); }
+  toast(`已存到 Dropbox：${path}`, 3500);
+}
+
+async function exportReport(kind, toDropbox = false) {
   const start = S.exportStart, end = S.exportEnd;
   const records = buildRecords(start, end, S);
   if (!records.length) return toast('這段期間沒有任何紀錄');
-  S.exporting = kind;
+  if (toDropbox && !safeName(S.userName)) { toast('請先填寫使用者名稱，Dropbox 會依名稱分資料夾', 3500); return ACTIONS['open-settings'](); }
+  S.exporting = toDropbox ? `${kind}-dbx` : kind;
   render();
   try {
     const analysis = S.includeAnalysis ? analyze({ start, end, ...S }) : null;
     const range = `${compactDay(start)}-${compactDay(end)}`;
+    let blob, filename;
     if (kind === 'excel') {
-      openFileSheet(buildExcel(records, analysis, S.products, S.supplements), `食膚日記_${range}.xlsx`);
+      blob = buildExcel(records, analysis, S.products, S.supplements);
+      filename = withUser(S.userName, `食膚日記_${range}.xlsx`);
     } else {
-      const blob = await buildPDF({
+      blob = await buildPDF({
         records, start, end, analysis, includePhotos: S.includePhotos,
         getPhoto: async (id) => (await db.get('photos', id))?.data,
       });
-      openFileSheet(blob, `食膚日記_${range}.pdf`);
+      filename = withUser(S.userName, `食膚日記_${range}.pdf`);
     }
+    if (toDropbox) await uploadToDropbox(blob, filename, false);
+    else openFileSheet(blob, filename);
   } catch (err) {
     fail(err);
   } finally {
@@ -1227,6 +1263,9 @@ const ACTIONS = {
   },
   'export-pdf': () => exportReport('pdf'),
   'export-excel': () => exportReport('excel'),
+  'export-pdf-dbx': () => exportReport('pdf', true),
+  'export-excel-dbx': () => exportReport('excel', true),
+  'file-to-dbx': () => busy('file-to-dbx', () => uploadToDropbox(sheet.blob, sheet.filename, sheet.isBackup).then(render)),
   'share-file': async () => {
     const shared = await shareOrDownload(sheet.blob, sheet.filename);
     if (shared && sheet.isBackup) { await markBackedUp(); S.lastBackup = new Date().toISOString(); render(); }
@@ -1241,9 +1280,19 @@ const ACTIONS = {
   },
   'apply-update': () => location.reload(),
   'open-settings': async () => {
-    for (const f of ['apiKey', 'geminiKey', 'geminiModel']) delete drafts[f];
+    for (const f of ['apiKey', 'geminiKey', 'geminiModel', 'userName']) delete drafts[f];
     openSheet('settings');
     await prepareDropboxLink();
+  },
+  'save-user': async () => {
+    const name = safeName(drafts.userName ?? S.userName);
+    if (!name) return toast('請輸入名稱');
+    S.userName = name;
+    drafts.userName = name;
+    await db.setSetting('userName', name);
+    renderSheet();
+    render();
+    toast(`已儲存：${name}`);
   },
   'set-provider': async (t) => {
     S.provider = Object.keys(PROVIDERS).find((k) => PROVIDERS[k] === t.dataset.value) || 'gemini';
@@ -1286,7 +1335,7 @@ const ACTIONS = {
     toast('已移除 API Key');
   },
   'backup-file': async () => {
-    try { openFileSheet(await makeBackup(), backupFilename(), true); } catch (err) { fail(err); }
+    try { openFileSheet(await makeBackup(), backupFilename(S.userName), true); } catch (err) { fail(err); }
   },
 
   'dbx-save-key': async () => {
@@ -1318,11 +1367,8 @@ const ACTIONS = {
     toast('已連結 Dropbox');
   }),
   'dbx-backup': () => busy('dbx-backup', async () => {
-    await dropbox.upload(S.dropboxKey, backupFilename(), await makeBackup());
-    await markBackedUp();
-    S.lastBackup = new Date().toISOString();
+    await uploadToDropbox(await makeBackup(), backupFilename(S.userName), true);
     render();
-    toast('已備份到 Dropbox');
   }),
   'dbx-list': () => busy('dbx-list', async () => {
     const entries = await dropbox.listBackups(S.dropboxKey);
