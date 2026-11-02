@@ -175,16 +175,11 @@ async function send(apiKey, body) {
   return text;
 }
 
-/** 照片（JPEG dataURL，可為 null）＋文字補充 → 食物清單 */
-export async function analyzeMeal(apiKey, photoDataURL, hint) {
-  const content = [];
-  if (photoDataURL) {
-    content.push({
-      type: 'image',
-      source: { type: 'base64', media_type: 'image/jpeg', data: photoDataURL.split(',')[1] },
-    });
-  }
-  content.push({ type: 'text', text: mealPrompt(photoDataURL, hint) });
+const imageBlocks = (photos) => photos.map((p) => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: p.split(',')[1] } }));
+
+/** 照片（JPEG dataURL 陣列，可為空）＋文字補充 → 食物清單 */
+export async function analyzeMeal(apiKey, photos, hint) {
+  const content = [...imageBlocks(photos), { type: 'text', text: mealPrompt(photos.length, hint) }];
 
   const json = await send(apiKey, {
     model: MODEL,
@@ -196,12 +191,16 @@ export async function analyzeMeal(apiKey, photoDataURL, hint) {
   return parseMeal(json);
 }
 
-export function mealPrompt(photoDataURL, hint) {
+export function mealPrompt(photoCount, hint) {
   let text = '請分析這一餐。';
+  if (photoCount > 1) text += `\n共 ${photoCount} 張照片，可能是同一餐的不同角度或不同的菜，同一樣食物不要重複計算。`;
   if (hint.trim()) text += `\n使用者補充說明：${hint.trim()}`;
-  if (!photoDataURL) text += '\n（沒有照片，請依文字描述估算）';
+  if (!photoCount) text += '\n（沒有照片，請依文字描述估算）';
   return text;
 }
+
+/** 多張包裝照片時提示 AI 綜合判讀（例如正面包裝＋背面成分表） */
+export const multiPhotoNote = (n) => (n > 1 ? `\n共 ${n} 張照片，是同一個產品的不同面（例如正面包裝與背面成分表），請綜合所有照片判讀。` : '');
 
 /** 把 AI 回傳的 JSON 文字轉成 App 的餐點格式（Claude 與 Gemini 共用） */
 export function parseMeal(json) {
@@ -221,36 +220,26 @@ export function parseMeal(json) {
   };
 }
 
-export async function analyzeFace(apiKey, photoDataURL) {
+export const facePrompt = (n) => FACE_PROMPT + (n > 1 ? `\n共 ${n} 張照片，是同一天臉部的不同角度，請綜合判讀，同一顆痘痘不要重複計算。` : '');
+
+export async function analyzeFace(apiKey, photos) {
   const json = await send(apiKey, {
     model: MODEL,
     max_tokens: 16000,
     system: FACE_SYSTEM,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: photoDataURL.split(',')[1] } },
-        { type: 'text', text: FACE_PROMPT },
-      ],
-    }],
+    messages: [{ role: 'user', content: [...imageBlocks(photos), { type: 'text', text: facePrompt(photos.length) }] }],
     output_config: { effort: 'medium', format: { type: 'json_schema', schema: FACE_SCHEMA } },
   });
   return parseFace(json);
 }
 
-export async function analyzeItem(apiKey, kind, photoDataURL) {
+export async function analyzeItem(apiKey, kind, photos) {
   const ai = ITEM_AI[kind];
   const json = await send(apiKey, {
     model: MODEL,
     max_tokens: 16000,
     system: ai.system,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: photoDataURL.split(',')[1] } },
-        { type: 'text', text: ai.prompt },
-      ],
-    }],
+    messages: [{ role: 'user', content: [...imageBlocks(photos), { type: 'text', text: ai.prompt + multiPhotoNote(photos.length) }] }],
     output_config: { effort: 'medium', format: { type: 'json_schema', schema: ai.schema } },
   });
   return parseItem(kind, json);

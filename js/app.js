@@ -11,7 +11,7 @@ import {
   analyzeMealGemini, analyzeTriggersGemini, analyzeFaceGemini, analyzeItemGemini, listGeminiModels, GEMINI_DEFAULT_MODEL,
 } from './gemini.js';
 import { analyze, aiPrompt, levelOf } from './analyzer.js';
-import { buildRecords, mealCalories, mealAllergens, mealNames } from './records.js';
+import { buildRecords, mealCalories, mealAllergens, mealNames, photoIdsOf } from './records.js';
 import { buildExcel } from './excel.js';
 import { buildPDF } from './pdf.js';
 import { makeBackup, restoreBackup, markBackedUp, backupFilename, safeName, withUser } from './backup.js';
@@ -436,29 +436,77 @@ const RISK_COLOR = { 低: 'var(--green)', 中: 'var(--orange)', 高: 'var(--red)
 const riskLine = (ai) => (ai && RISK_COLOR[ai.risk]
   ? `<span class="tagline" style="color:${RISK_COLOR[ai.risk]}">痘痘風險：${ai.risk}${ai.flags.length ? `・${esc(ai.flags.slice(0, 3).join('、'))}` : ''}</span>` : '');
 
+// ---------- 多張照片 ----------
+const MAX_PHOTOS = 6;
+const PHOTO_EDITORS = { meal: () => editor, product: () => productEditor, supplement: () => suppEditor, face: () => faceEditor };
+const editorOf = (target) => PHOTO_EDITORS[target]();
+// 包裝要看清楚成分表的小字，解析度給高一點
+const photoSize = (target) => (target === 'product' || target === 'supplement' ? [1600, 0.8] : [1280, 0.72]);
+
+async function readPhotos(files, target, room) {
+  const out = [];
+  for (const file of [...files].slice(0, room)) {
+    try { out.push(await resizeImage(file, ...photoSize(target))); } catch { toast('有照片無法讀取，已略過'); }
+  }
+  if (files.length > room) toast(`每筆最多 ${MAX_PHOTOS} 張，多的已略過`);
+  return out;
+}
+
+async function loadPhotos(rec, legacyHas) {
+  const ids = photoIdsOf(rec, legacyHas);
+  const rows = await Promise.all(ids.map((pid) => db.get('photos', pid)));
+  const photos = rows.map((r) => r?.data).filter(Boolean);
+  return photos.length || !ids.length || !rec.thumb ? photos : [rec.thumb];
+}
+
+// 照片存法：第一張用紀錄 id，其餘用 id#1、id#2…；多出來的舊照片刪掉；縮圖取第一張
+async function storePhotos(rec, photos, oldIds, thumbSize = 200) {
+  const ids = photos.map((_, i) => (i ? `${rec.id}#${i}` : rec.id));
+  for (let i = 0; i < photos.length; i++) await db.put('photos', { id: ids[i], data: photos[i] });
+  for (const old of oldIds) if (!ids.includes(old)) await db.del('photos', old);
+  rec.photoIds = ids;
+  rec.hasPhoto = ids.length > 0;
+  rec.thumb = photos.length ? await resizeImage(photos[0], thumbSize, 0.65) : null;
+}
+
+const deletePhotos = async (rec, legacyHas) => { for (const pid of photoIdsOf(rec, legacyHas)) await db.del('photos', pid); };
+
+function photoGallery(ed, target, capture = 'environment') {
+  const n = ed.photos.length;
+  return `
+    ${n ? `<div class="row photo-grid">${ed.photos.map((p, i) => `<div class="photo-cell">
+        <img src="${p}" alt="" ${i ? `data-action="cover-photo" data-target="${target}" data-idx="${i}"` : ''}>
+        ${i === 0 && n > 1 ? '<span class="photo-badge">封面</span>' : ''}
+        <button class="photo-del" data-action="del-photo" data-target="${target}" data-idx="${i}" aria-label="刪除這張">✕</button>
+      </div>`).join('')}</div>` : ''}
+    <div class="row btn-row">
+      ${n < MAX_PHOTOS ? `
+        <label class="btn">📷 拍照<input type="file" accept="image/*" capture="${capture}" data-bind="add-photos" data-target="${target}" hidden></label>
+        <label class="btn">🖼️ 從相簿（可多選）<input type="file" accept="image/*" multiple data-bind="add-photos" data-target="${target}" hidden></label>`
+        : `<span class="small muted">已達上限 ${MAX_PHOTOS} 張</span>`}
+    </div>
+    ${n > 1 ? '<div class="row small muted">點其他照片可以設為封面；AI 分析會一次看全部照片。</div>' : ''}`;
+}
+
 // 保養品與保健食品編輯頁共用的「拍照＋AI 辨識」區塊
 function itemPhotoSection(ed, kind) {
   const ai = ed.ai;
+  const n = ed.photos.length;
   return `<section class="group">
-      <div class="group-head">包裝照片</div>
-      ${ed.photo ? `<div class="row"><img class="photo" src="${ed.photo}" alt="包裝照片"></div>` : ''}
-      <div class="row btn-row">
-        <label class="btn">📷 拍照<input type="file" accept="image/*" capture="environment" data-bind="item-photo" data-kind="${kind}" hidden></label>
-        <label class="btn">🖼️ 從相簿<input type="file" accept="image/*" data-bind="item-photo" data-kind="${kind}" hidden></label>
-        ${ed.photo ? `<button class="btn danger" data-action="remove-item-photo" data-kind="${kind}">移除照片</button>` : ''}
-      </div>
-      ${ed.photo ? `<button class="row action" data-action="analyze-item" data-kind="${kind}" ${S.aiBusy ? 'disabled' : ''}>${spinnerLabel(S.aiBusy, '✨ AI 辨識產品與成分', '分析中，約需 10–30 秒…')}</button>` : ''}
+      <div class="group-head"><span>包裝照片</span><span>${n ? `${n} 張` : ''}</span></div>
+      ${photoGallery(ed, kind)}
+      ${n ? `<button class="row action" data-action="analyze-item" data-kind="${kind}" ${S.aiBusy ? 'disabled' : ''}>${spinnerLabel(S.aiBusy, `✨ AI 辨識產品與成分${n > 1 ? `（${n} 張一起看）` : ''}`, '分析中，約需 10–30 秒…')}</button>` : ''}
       ${ai ? `
         <div class="row kv"><span>痘痘風險</span><b style="color:${RISK_COLOR[ai.risk] || 'inherit'}">${ai.risk}</b></div>
         ${ai.flags.length ? `<div class="row kv"><span>留意成分</span><b>${esc(ai.flags.join('、'))}</b></div>` : ''}
         ${ai.summary ? `<div class="row small">${esc(ai.summary)}</div>` : ''}` : ''}
     </section>
-    <p class="foot">${ed.photo ? '拍正面包裝和背面成分表效果最好。AI 會自動填入下方空白的欄位，結果可以再修改。' : '拍下包裝或成分表，AI 可以幫你填好名稱、品牌與成分，並評估對痘痘肌的風險。'}</p>`;
+    <p class="foot">${n ? '建議正面包裝＋背面成分表一起拍。AI 會自動填入下方空白的欄位，結果可以再修改。' : '拍下包裝正面和背面成分表（可一次選多張），AI 可以幫你填好名稱、品牌與成分，並評估對痘痘肌的風險。'}</p>`;
 }
 
 const faceButtons = () => `
   <label class="btn pink">🤳 自拍<input type="file" accept="image/*" capture="user" data-bind="face-photo" hidden></label>
-  <label class="btn">🖼️ 從相簿<input type="file" accept="image/*" data-bind="face-photo" hidden></label>`;
+  <label class="btn">🖼️ 從相簿（可多選）<input type="file" accept="image/*" multiple data-bind="face-photo" hidden></label>`;
 
 function faceStrip(day) {
   const faces = facesOn(day);
@@ -538,13 +586,8 @@ const SHEETS = {
         </section>
 
         <section class="group">
-          <div class="group-head">餐點照片</div>
-          ${e.photo ? `<div class="row"><img class="photo" src="${e.photo}" alt="餐點照片"></div>` : ''}
-          <div class="row btn-row">
-            <label class="btn">📷 拍照<input type="file" accept="image/*" capture="environment" data-bind="meal-photo" hidden></label>
-            <label class="btn">🖼️ 從相簿<input type="file" accept="image/*" data-bind="meal-photo" hidden></label>
-            ${e.photo ? '<button class="btn danger" data-action="remove-photo">移除照片</button>' : ''}
-          </div>
+          <div class="group-head"><span>餐點照片</span><span>${e.photos.length > 1 ? `${e.photos.length} 張` : ''}</span></div>
+          ${photoGallery(e, 'meal')}
         </section>
 
         <section class="group">
@@ -637,7 +680,7 @@ const SHEETS = {
     return `<div class="sheet-bar"><button data-action="close-sheet">取消</button><b>${f.id ? '臉部自拍' : '新增自拍'}</b><button class="primary" data-action="save-face">儲存</button></div>
       <div class="sheet-body">
         <section class="group">
-          <div class="row"><img class="photo" src="${f.photo}" alt="臉部自拍"></div>
+          ${photoGallery(f, 'face', 'user')}
           <div class="row"><span class="label">日期</span><input type="date" data-bind="face-day" value="${f.day}" max="${todayKey()}"><input type="time" data-bind="face-time" value="${f.time}"></div>
         </section>
         ${prev ? `<section class="group">
@@ -794,11 +837,10 @@ const drafts = {};
 async function openMealEditor(id) {
   if (id) {
     const m = S.meals.find((x) => x.id === id);
-    const photo = m.hasPhoto ? (await db.get('photos', id))?.data || null : null;
-    editor = { ...structuredClone(m), photo, hint: '' };
+    editor = { ...structuredClone(m), photos: await loadPhotos(m), hint: '' };
   } else {
     const time = nowTime();
-    editor = { id: null, day: S.tab === 'today' ? S.day : todayKey(), time, type: guessMealType(time), photo: null, items: [], notes: '', summary: '', hint: '' };
+    editor = { id: null, day: S.tab === 'today' ? S.day : todayKey(), time, type: guessMealType(time), photos: [], items: [], notes: '', summary: '', hint: '' };
   }
   openSheet('meal');
 }
@@ -809,14 +851,14 @@ async function saveMeal() {
   const items = e.items
     .filter((i) => i.name.trim())
     .map((i) => ({ ...i, name: i.name.trim(), calories: Math.max(0, Math.round(Number(i.calories) || 0)) }));
+  const old = e.id ? S.meals.find((x) => x.id === e.id) : null;
   const meal = {
     id, day: e.day, time: e.time, type: e.type,
-    thumb: e.photo ? await resizeImage(e.photo, 200, 0.6) : null,
-    hasPhoto: Boolean(e.photo),
+    thumb: old?.thumb || null, hasPhoto: old?.hasPhoto || false, photoIds: old ? photoIdsOf(old) : [],
     items, notes: e.notes.trim(), summary: e.summary, updatedAt: Date.now(),
   };
+  if (e.photosChanged || !old) await storePhotos(meal, e.photos, old ? photoIdsOf(old) : []);
   await db.put('meals', meal);
-  if (e.photo) await db.put('photos', { id, data: e.photo }); else await db.del('photos', id);
   upsert(S.meals, meal);
   closeSheet();
   render();
@@ -851,32 +893,14 @@ async function saveProduct() {
       await db.put('careLogs', log);
     }
   }
-  const { photo, photoChanged, ...rest } = p;
+  const { photos, photosChanged, ...rest } = p;
   const product = { ...rest, id: p.id || uid(), name, brand: p.brand.trim(), createdAt: p.createdAt || Date.now() };
-  await saveItemPhoto(product, photo, photoChanged);
+  if (photosChanged) await storePhotos(product, photos, old ? photoIdsOf(old) : []);
   await db.put('products', product);
   upsert(S.products, product);
   closeSheet();
   render();
   toast('已儲存');
-}
-
-// 包裝照片：原圖存在 photos，清單只放縮圖
-async function saveItemPhoto(item, photo, changed) {
-  if (!changed) return;
-  if (photo) {
-    item.thumb = await resizeImage(photo, 200, 0.6);
-    item.hasPhoto = true;
-    await db.put('photos', { id: item.id, data: photo });
-  } else {
-    item.thumb = null;
-    item.hasPhoto = false;
-    await db.del('photos', item.id);
-  }
-}
-
-async function loadItemPhoto(item) {
-  return item.hasPhoto ? (await db.get('photos', item.id))?.data || item.thumb : null;
 }
 
 async function saveSupp() {
@@ -891,9 +915,9 @@ async function saveSupp() {
       await db.put('suppLogs', log);
     }
   }
-  const { photo, photoChanged, ...rest } = s;
+  const { photos, photosChanged, ...rest } = s;
   const supp = { ...rest, id: s.id || uid(), name, brand: s.brand.trim(), dosage: s.dosage.trim(), createdAt: s.createdAt || Date.now() };
-  await saveItemPhoto(supp, photo, photoChanged);
+  if (photosChanged) await storePhotos(supp, photos, old ? photoIdsOf(old) : []);
   await db.put('supplements', supp);
   upsert(S.supplements, supp);
   closeSheet();
@@ -913,20 +937,21 @@ const itemEditor = (kind) => (kind === 'product' ? productEditor : suppEditor);
 
 async function openFaceEditor(id) {
   const f = S.faces.find((x) => x.id === id);
-  const photo = (await db.get('photos', id))?.data || f.thumb;
-  faceEditor = { ...structuredClone(f), photo };
+  faceEditor = { ...structuredClone(f), photos: await loadPhotos(f, true) };
   openSheet('face');
 }
 
 async function saveFace() {
   const f = faceEditor;
-  const id = f.id || uid();
+  if (!f.photos.length) return toast('至少要有一張照片；不需要這筆的話請按「刪除」');
+  const old = f.id ? S.faces.find((x) => x.id === f.id) : null;
   const face = {
-    id, day: f.day, time: f.time, notes: f.notes.trim(), ai: f.ai || null,
-    thumb: f.thumb || await resizeImage(f.photo, 360, 0.7), updatedAt: Date.now(),
+    id: f.id || uid(), day: f.day, time: f.time, notes: f.notes.trim(), ai: f.ai || null,
+    thumb: old?.thumb || null, photoIds: old ? photoIdsOf(old, true) : [], updatedAt: Date.now(),
   };
+  if (f.photosChanged || !old) await storePhotos(face, f.photos, old ? photoIdsOf(old, true) : [], 360);
+  delete face.hasPhoto;
   await db.put('faces', face);
-  if (!f.id) await db.put('photos', { id, data: f.photo });
   upsert(S.faces, face);
   closeSheet();
   render();
@@ -1022,14 +1047,13 @@ const ACTIONS = {
   'edit-meal': (t) => openMealEditor(t.dataset.id),
   'close-sheet': () => closeSheet(),
   'meal-type': (t) => { editor.type = t.dataset.value; renderSheet(); },
-  'remove-photo': () => { editor.photo = null; renderSheet(); },
   'add-item': () => { editor.items.push({ name: '', portion: '', calories: 0, allergens: [], acneTags: [] }); renderSheet(); },
   'remove-item': (t) => { editor.items.splice(Number(t.dataset.idx), 1); renderSheet(); },
   'save-meal': () => saveMeal().catch(fail),
   'delete-meal': async () => {
     if (!confirm('確定要刪除這一餐嗎？')) return;
     await db.del('meals', editor.id);
-    await db.del('photos', editor.id);
+    await deletePhotos(S.meals.find((m) => m.id === editor.id));
     removeWhere(S.meals, (m) => m.id === editor.id);
     closeSheet();
     render();
@@ -1037,12 +1061,12 @@ const ACTIONS = {
   'analyze-meal': async () => {
     if (S.aiBusy) return;
     if (!aiKey()) return needKey();
-    if (!editor.photo && !editor.hint.trim()) { toast('請先拍照，或在補充說明輸入吃了什麼'); return; }
+    if (!editor.photos.length && !editor.hint.trim()) { toast('請先拍照，或在補充說明輸入吃了什麼'); return; }
     S.aiBusy = true;
     renderSheet();
     const target = editor;
     try {
-      const r = await aiMeal(target.photo, target.hint);
+      const r = await aiMeal(target.photos, target.hint);
       target.items = r.items;
       target.summary = r.summary;
       if (!r.items.length) toast('沒有辨識到食物，可以手動新增', 3500);
@@ -1096,7 +1120,7 @@ const ACTIONS = {
   'delete-face': async () => {
     if (!confirm('確定要刪除這張自拍嗎？')) return;
     await db.del('faces', faceEditor.id);
-    await db.del('photos', faceEditor.id);
+    await deletePhotos(S.faces.find((f) => f.id === faceEditor.id), true);
     removeWhere(S.faces, (f) => f.id === faceEditor.id);
     closeSheet();
     render();
@@ -1108,7 +1132,8 @@ const ACTIONS = {
     renderSheet();
     const target = faceEditor;
     try {
-      target.ai = { ...(await aiFace(target.photo)), at: Date.now() };
+      if (!target.photos.length) throw new Error('請先加入照片');
+      target.ai = { ...(await aiFace(target.photos)), at: Date.now() };
     } catch (err) {
       fail(err);
     } finally {
@@ -1157,38 +1182,38 @@ const ACTIONS = {
   },
 
   'new-product': () => {
-    productEditor = { id: null, name: '', brand: '', category: '化妝水', ingredients: '', useMorning: true, useEvening: true, isActive: true, photo: null, ai: null };
+    productEditor = { id: null, name: '', brand: '', category: '化妝水', ingredients: '', useMorning: true, useEvening: true, isActive: true, photos: [], ai: null };
     openSheet('product');
   },
   'edit-product': async (t) => {
     const p = S.products.find((x) => x.id === t.dataset.id);
-    productEditor = { ...structuredClone(p), photo: await loadItemPhoto(p) };
+    productEditor = { ...structuredClone(p), photos: await loadPhotos(p) };
     openSheet('product');
   },
   'save-product': () => saveProduct().catch(fail),
   'delete-product': async () => {
     if (!confirm(`確定要刪除「${productEditor.name}」嗎？\n（過去的保養紀錄仍會保留產品名稱）`)) return;
     await db.del('products', productEditor.id);
-    await db.del('photos', productEditor.id);
+    await deletePhotos(S.products.find((p) => p.id === productEditor.id));
     removeWhere(S.products, (p) => p.id === productEditor.id);
     closeSheet();
     render();
   },
 
   'new-supp': () => {
-    suppEditor = { id: null, name: '', brand: '', dosage: '', ingredients: '', daily: true, isActive: true, photo: null, ai: null };
+    suppEditor = { id: null, name: '', brand: '', dosage: '', ingredients: '', daily: true, isActive: true, photos: [], ai: null };
     openSheet('supp');
   },
   'edit-supp': async (t) => {
     const s = S.supplements.find((x) => x.id === t.dataset.id);
-    suppEditor = { ...structuredClone(s), photo: await loadItemPhoto(s) };
+    suppEditor = { ...structuredClone(s), photos: await loadPhotos(s) };
     openSheet('supp');
   },
   'save-supp': () => saveSupp().catch(fail),
   'delete-supp': async () => {
     if (!confirm(`確定要刪除「${suppEditor.name}」嗎？\n（過去的服用紀錄仍會保留名稱）`)) return;
     await db.del('supplements', suppEditor.id);
-    await db.del('photos', suppEditor.id);
+    await deletePhotos(S.supplements.find((s) => s.id === suppEditor.id));
     removeWhere(S.supplements, (s) => s.id === suppEditor.id);
     closeSheet();
     render();
@@ -1204,9 +1229,16 @@ const ACTIONS = {
     toast(`已套用 ${fmtMd(t.dataset.from)} 的保健食品`);
   },
 
-  'remove-item-photo': (t) => {
-    const ed = itemEditor(t.dataset.kind);
-    Object.assign(ed, { photo: null, photoChanged: true });
+  'del-photo': (t) => {
+    const ed = editorOf(t.dataset.target);
+    ed.photos.splice(Number(t.dataset.idx), 1);
+    ed.photosChanged = true;
+    renderSheet();
+  },
+  'cover-photo': (t) => {
+    const ed = editorOf(t.dataset.target);
+    ed.photos.unshift(...ed.photos.splice(Number(t.dataset.idx), 1));
+    ed.photosChanged = true;
     renderSheet();
   },
   'analyze-item': async (t) => {
@@ -1217,7 +1249,7 @@ const ACTIONS = {
     S.aiBusy = true;
     renderSheet();
     try {
-      const r = await aiItem(kind, target.photo);
+      const r = await aiItem(kind, target.photos);
       target.ai = { risk: r.risk, flags: r.flags, summary: r.summary, at: Date.now() };
       // 只填入空白的欄位，避免蓋掉使用者自己輸入的內容
       for (const f of ['name', 'brand', 'ingredients', 'dosage']) if (r[f] && !(target[f] || '').trim()) target[f] = r[f];
@@ -1411,23 +1443,25 @@ const CHANGES = {
   'day-input': (t) => { S.day = t.value && t.value <= todayKey() ? t.value : todayKey(); render(); },
   'meal-day': (t) => { if (t.value) editor.day = t.value; },
   'meal-time': (t) => { if (t.value) editor.time = t.value; },
-  'meal-photo': async (t) => {
-    const file = t.files?.[0];
-    if (!file) return;
-    try {
-      editor.photo = await resizeImage(file);
-      renderSheet();
-    } catch {
-      toast('無法讀取這張照片，請換一張試試');
-    }
-  },
-  'face-photo': async (t) => {
-    const file = t.files?.[0];
+  'add-photos': async (t) => {
+    const files = [...(t.files || [])];
     t.value = '';
-    if (!file) return;
-    let photo;
-    try { photo = await resizeImage(file); } catch { return toast('無法讀取這張照片，請換一張試試'); }
-    faceEditor = { id: null, day: S.tab === 'today' ? S.day : todayKey(), time: nowTime(), photo, thumb: null, notes: '', ai: null };
+    const ed = editorOf(t.dataset.target);
+    if (!files.length || !ed) return;
+    const added = await readPhotos(files, t.dataset.target, MAX_PHOTOS - ed.photos.length);
+    if (!added.length) return;
+    ed.photos.push(...added);
+    ed.photosChanged = true;
+    renderSheet();
+  },
+  // 從「臉部」頁或今日頁直接自拍／選照片：建立新的一筆自拍紀錄
+  'face-photo': async (t) => {
+    const files = [...(t.files || [])];
+    t.value = '';
+    if (!files.length) return;
+    const photos = await readPhotos(files, 'face', MAX_PHOTOS);
+    if (!photos.length) return;
+    faceEditor = { id: null, day: S.tab === 'today' ? S.day : todayKey(), time: nowTime(), photos, photosChanged: true, notes: '', ai: null };
     openSheet('face');
   },
   'face-day': (t) => { if (t.value) { faceEditor.day = t.value; renderSheet(); } },
@@ -1438,17 +1472,6 @@ const CHANGES = {
   },
   'prod': INPUTS.prod,
   'supp': INPUTS.supp,
-  'item-photo': async (t) => {
-    const file = t.files?.[0];
-    t.value = '';
-    if (!file) return;
-    try {
-      Object.assign(itemEditor(t.dataset.kind), { photo: await resizeImage(file, 1600, 0.8), photoChanged: true });
-      renderSheet();
-    } catch {
-      toast('無法讀取這張照片，請換一張試試');
-    }
-  },
   'skin-notes': (t) => {
     const c = checkOf(S.day);
     if (c) { c.notes = t.value.trim(); db.put('skinChecks', c); }

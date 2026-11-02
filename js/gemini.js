@@ -1,8 +1,10 @@
 // 直接從瀏覽器呼叫 Google Gemini API（Google AI Studio 的金鑰，有免費額度）
 import {
   MEAL_SYSTEM, TRIGGER_SYSTEM, MEAL_SCHEMA, mealPrompt, parseMeal,
-  FACE_SYSTEM, FACE_SCHEMA, FACE_PROMPT, parseFace, ITEM_AI, parseItem,
+  FACE_SYSTEM, FACE_SCHEMA, facePrompt, parseFace, ITEM_AI, parseItem, multiPhotoNote,
 } from './claude.js';
+
+const imageParts = (photos) => photos.map((p) => ({ inline_data: { mime_type: 'image/jpeg', data: p.split(',')[1] } }));
 
 export const GEMINI_DEFAULT_MODEL = 'gemini-3.8-flash';
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
@@ -113,10 +115,8 @@ export async function listGeminiModels(apiKey) {
     .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
 }
 
-export async function analyzeMealGemini(apiKey, model, photoDataURL, hint) {
-  const parts = [];
-  if (photoDataURL) parts.push({ inline_data: { mime_type: 'image/jpeg', data: photoDataURL.split(',')[1] } });
-  parts.push({ text: mealPrompt(photoDataURL, hint) });
+export async function analyzeMealGemini(apiKey, model, photos, hint) {
+  const parts = [...imageParts(photos), { text: mealPrompt(photos.length, hint) }];
 
   const json = await send(apiKey, model, {
     system_instruction: { parts: [{ text: MEAL_SYSTEM }] },
@@ -127,21 +127,21 @@ export async function analyzeMealGemini(apiKey, model, photoDataURL, hint) {
   return parseMeal(json);
 }
 
-export async function analyzeFaceGemini(apiKey, model, photoDataURL) {
+export async function analyzeFaceGemini(apiKey, model, photos) {
   const json = await send(apiKey, model, {
     system_instruction: { parts: [{ text: FACE_SYSTEM }] },
-    contents: [{ role: 'user', parts: [{ inline_data: { mime_type: 'image/jpeg', data: photoDataURL.split(',')[1] } }, { text: FACE_PROMPT }] }],
+    contents: [{ role: 'user', parts: [...imageParts(photos), { text: facePrompt(photos.length) }] }],
     generationConfig: { responseMimeType: 'application/json', responseSchema: toGeminiSchema(FACE_SCHEMA) },
     example: FACE_EXAMPLE,
   });
   return parseFace(json);
 }
 
-export async function analyzeItemGemini(apiKey, model, kind, photoDataURL) {
+export async function analyzeItemGemini(apiKey, model, kind, photos) {
   const ai = ITEM_AI[kind];
   const json = await send(apiKey, model, {
     system_instruction: { parts: [{ text: ai.system }] },
-    contents: [{ role: 'user', parts: [{ inline_data: { mime_type: 'image/jpeg', data: photoDataURL.split(',')[1] } }, { text: ai.prompt }] }],
+    contents: [{ role: 'user', parts: [...imageParts(photos), { text: ai.prompt + multiPhotoNote(photos.length) }] }],
     generationConfig: { responseMimeType: 'application/json', responseSchema: toGeminiSchema(ai.schema) },
     example: ai.example,
   });

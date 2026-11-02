@@ -181,6 +181,13 @@ input[type=date], input[type=time] { min-height: 38px; }
 
 .chip small { opacity: .65; font-size: 11px; }
 
+/* 多張照片 */
+.photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.photo-cell { position: relative; }
+.photo-cell img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px; background: var(--chip); display: block; }
+.photo-badge { position: absolute; left: 6px; top: 6px; background: var(--pink); color: #fff; font-size: 11px; padding: 1px 7px; border-radius: 999px; }
+.photo-del { position: absolute; right: 4px; top: 4px; width: 26px; height: 26px; border-radius: 50%; border: 0; background: rgba(0,0,0,.55); color: #fff; font-size: 13px; line-height: 26px; padding: 0; }
+
 /* 臉部自拍 */
 .face-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
 .face-cell { border: 0; padding: 0; background: none; display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 12px; color: var(--muted); }

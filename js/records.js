@@ -1,6 +1,12 @@
 // 將某一天的所有紀錄整合在一起，供報告、Excel 與 AI 分析共用
 import { addDays, groupBy, sum, uniqSorted } from './util.js';
 
+/**
+ * 一筆紀錄的所有照片編號（照片存在 photos：第一張用紀錄 id，之後是 id#1、id#2…）。
+ * 舊資料只有一張照片、沒有 photoIds；自拍一定有照片，所以 legacyHas 傳 true。
+ */
+export const photoIdsOf = (rec, legacyHas = rec.hasPhoto) => rec.photoIds || (legacyHas ? [rec.id] : []);
+
 export const mealCalories = (meal) => sum(meal.items, (i) => Number(i.calories) || 0);
 export const mealAllergens = (meal) => uniqSorted(meal.items.flatMap((i) => i.allergens));
 export const mealNames = (meal) => meal.items.map((i) => i.name).filter(Boolean).join('、');

@@ -1,7 +1,7 @@
 // PDF 報告：用 canvas 排版（中文字型由手機系統提供），每頁轉成 JPEG 後組成 PDF
 import { fmtDay, fmtYmd, todayKey, nowTime, loadImage, sum } from './util.js';
 import { SEVERITIES } from './vocab.js';
-import { mealCalories, mealAllergens, mealNames } from './records.js';
+import { mealCalories, mealAllergens, mealNames, photoIdsOf } from './records.js';
 import { levelOf } from './analyzer.js';
 
 const W = 1190, H = 1684, M = 80;          // A4，2 倍解析度
@@ -133,7 +133,7 @@ export async function buildPDF({ records, start, end, analysis, includePhotos, g
     }
     if (includePhotos) {
       const photos = [];
-      for (const m of r.meals) if (m.hasPhoto) { const p = await getPhoto(m.id); if (p) photos.push(p); }
+      for (const m of r.meals) for (const pid of photoIdsOf(m)) { const p = await getPhoto(pid); if (p) photos.push(p); }
       if (photos.length) { y += 4; await thumbnails(photos); }
     }
     if (r.morning.length || r.evening.length) {
@@ -153,7 +153,7 @@ export async function buildPDF({ records, start, end, analysis, includePhotos, g
       await write(`臉部自拍 ${r.faces.length} 張${aiNotes.length ? `　AI：${aiNotes.join('；')}` : ''}`, { size: 21, color: '#555', indent: 24, after: 4 });
       if (includePhotos) {
         const photos = [];
-        for (const f of r.faces) { const p = await getPhoto(f.id); if (p) photos.push(p); }
+        for (const f of r.faces) for (const pid of photoIdsOf(f, true)) { const p = await getPhoto(pid); if (p) photos.push(p); }
         if (photos.length) { y += 4; await thumbnails(photos); }
       }
     }
