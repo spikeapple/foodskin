@@ -1,5 +1,5 @@
 // 離線快取：同網域的檔案先走網路（拿到最新版），沒網路時改用快取
-const CACHE = 'foodskin-2026.11.02-2048';
+const CACHE = 'foodskin-2026.11.21-0949';
 const ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/config.js', './js/db.js', './js/util.js', './js/vocab.js',

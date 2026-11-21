@@ -9,7 +9,7 @@ export const photoIdsOf = (rec, legacyHas = rec.hasPhoto) => rec.photoIds || (le
 
 export const mealCalories = (meal) => sum(meal.items, (i) => Number(i.calories) || 0);
 export const mealAllergens = (meal) => uniqSorted(meal.items.flatMap((i) => i.allergens));
-export const mealNames = (meal) => meal.items.map((i) => i.name).filter(Boolean).join('、');
+export const mealNames = (meal) => meal.items.filter((i) => i.name).map((i) => (i.qty && i.qty !== 1 ? `${i.name}×${i.qty}` : i.name)).join('、');
 
 export function buildRecords(start, end, { meals, careLogs, skinChecks, faces = [], suppLogs = [] }) {
   const suppByDay = new Map(suppLogs.map((l) => [l.day, l.names]));

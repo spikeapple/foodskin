@@ -210,13 +210,18 @@ export function parseMeal(json) {
   try { parsed = JSON.parse(body); } catch { throw new Error('無法解析 AI 回傳的資料，請再試一次。'); }
   return {
     summary: parsed.summary || '',
-    items: (parsed.foods || []).map((f) => ({
-      name: f.name,
-      portion: f.portion || '',
-      calories: Math.max(0, Math.round(f.calories || 0)),
-      allergens: f.allergens || [],
-      acneTags: f.acne_tags || [],
-    })),
+    items: (parsed.foods || []).map((f) => {
+      const calories = Math.max(0, Math.round(f.calories || 0));
+      return {
+        name: f.name,
+        portion: f.portion || '',
+        qty: 1,
+        unitCal: calories,
+        calories,
+        allergens: f.allergens || [],
+        acneTags: f.acne_tags || [],
+      };
+    }),
   };
 }
 

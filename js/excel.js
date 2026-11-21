@@ -28,11 +28,11 @@ export function buildExcel(records, analysis, products, supplements = []) {
 
   const foods = {
     name: '飲食明細',
-    header: ['日期', '時間', '餐別', '食物', '份量', '熱量(kcal)', '過敏原', '痘痘風險標籤', '餐點備註', 'AI 摘要'],
-    widths: [12, 7, 7, 20, 14, 10, 18, 18, 20, 36],
+    header: ['日期', '時間', '餐別', '食物', '份量', '數量', '熱量(kcal)', '過敏原', '痘痘風險標籤', '餐點備註', 'AI 摘要'],
+    widths: [12, 7, 7, 20, 14, 7, 10, 18, 18, 20, 36],
     rows: records.flatMap((r) => r.meals.flatMap((m) => {
       const items = m.items.length ? m.items : [{ name: '（未填）', portion: '', calories: 0, allergens: [], acneTags: [] }];
-      return items.map((i) => [fmtYmd(r.day), m.time, m.type, i.name, i.portion, Number(i.calories) || 0,
+      return items.map((i) => [fmtYmd(r.day), m.time, m.type, i.name, i.portion, Number(i.qty) || 1, Number(i.calories) || 0,
         i.allergens.join('、'), i.acneTags.join('、'), m.notes || '', m.summary || '']);
     })),
   };

@@ -92,12 +92,22 @@ function foodLibrary() {
       const name = it.name.trim();
       if (!name || S.hiddenFoods.includes(name)) continue;
       const prev = map.get(name);
-      map.set(name, { ...structuredClone(it), name, count: (prev?.count || 0) + 1, last: m.day });
+      map.set(name, { ...normItem(it), name, count: (prev?.count || 0) + 1, last: m.day });
     }
   }
   return [...map.values()].sort((a, b) => b.count - a.count || b.last.localeCompare(a.last));
 }
-const cloneItem = (it) => ({ name: it.name, portion: it.portion || '', calories: Number(it.calories) || 0, allergens: [...it.allergens], acneTags: [...it.acneTags] });
+// 份數 qty（0.5 為單位，0.5–20）；unitCal = 每份熱量；calories = 合計熱量 = unitCal × qty
+const QTY_MIN = 0.5, QTY_MAX = 20;
+const clampQty = (q) => Math.min(QTY_MAX, Math.max(QTY_MIN, Math.round((Number(q) || 1) * 2) / 2));
+function normItem(it) {
+  const calories = Number(it.calories) || 0;
+  const qty = clampQty(it.qty);
+  const unitCal = Number.isFinite(Number(it.unitCal)) && it.unitCal !== null && it.unitCal !== undefined && it.unitCal !== '' ? Number(it.unitCal) : calories / qty;
+  return { name: it.name, portion: it.portion || '', qty, unitCal, calories, allergens: [...(it.allergens || [])], acneTags: [...(it.acneTags || [])] };
+}
+const cloneItem = (it) => normItem(it);
+const fmtQty = (q) => `×${q}`;
 
 // ---------- 共用 UI ----------
 let toastTimer;
@@ -546,7 +556,22 @@ function foodLibChips(e) {
   const list = foodLibrary().filter((f) => !q || f.name.includes(q)).slice(0, q ? 60 : 30);
   if (!list.length) return '<span class="muted small">找不到符合的食物</span>';
   const picked = e.items.map((i) => i.name.trim());
-  return list.map((f) => `<button class="chip ${picked.includes(f.name) ? 'on' : ''}" data-action="pick-food" data-value="${esc(f.name)}">${esc(f.name)}<small> ${Number(f.calories) || 0}</small></button>`).join('');
+  return list.map((f) => `<button class="chip ${picked.includes(f.name) ? 'on' : ''}" data-action="pick-food" data-value="${esc(f.name)}">${esc(f.name)}<small> ${Math.round(f.unitCal)}</small></button>`).join('');
+}
+
+// 食物的過敏原／痘痘風險標籤：預設只顯示已選的，按「編輯」展開全部
+function tagPicker(it, i, field, label, all, color) {
+  const open = editor.openTags.has(`${i}:${field}`);
+  const sel = it[field];
+  const chip = (a) => `<button class="chip ${color} ${sel.includes(a) ? 'on' : ''}" data-action="item-tag" data-idx="${i}" data-field="${field}" data-value="${esc(a)}">${esc(a)}</button>`;
+  return `<div class="tag-block">
+      <div class="tag-head"><span class="tag-label ${color}">${label}</span>
+        ${open || sel.length ? '' : '<span class="muted small">無</span>'}
+        ${open ? '' : `<span class="chips">${sel.map(chip).join('')}</span>`}
+        <button class="link small" data-action="item-tags-open" data-idx="${i}" data-field="${field}">${open ? '收合' : '編輯'}</button>
+      </div>
+      ${open ? `<div class="chips">${all.map(chip).join('')}</div>` : ''}
+    </div>`;
 }
 
 // ---------- 抽屜 ----------
@@ -562,20 +587,20 @@ const SHEETS = {
           <button class="icon danger" data-action="remove-item" data-idx="${i}" aria-label="刪除">✕</button>
         </div>
         <div class="item-line">
-          <input data-bind="item" data-idx="${i}" data-field="portion" value="${esc(it.portion)}" placeholder="份量（例：一碗）">
-          <input class="kcal-input" type="number" inputmode="numeric" min="0" data-bind="item" data-idx="${i}" data-field="calories" value="${Number(it.calories) || 0}">
-          <span class="muted">kcal</span>
+          <input data-bind="item" data-idx="${i}" data-field="portion" value="${esc(it.portion)}" placeholder="每份份量（例：一碗）">
+          <div class="stepper">
+            <button data-action="qty-dec" data-idx="${i}" aria-label="減少份數" ${it.qty <= QTY_MIN ? 'disabled' : ''}>−</button>
+            <span class="qty">${fmtQty(it.qty)}</span>
+            <button data-action="qty-inc" data-idx="${i}" aria-label="增加份數" ${it.qty >= QTY_MAX ? 'disabled' : ''}>＋</button>
+          </div>
         </div>
         <div class="item-line">
-          <label class="multi orange">過敏原
-            <select multiple data-bind="item-multi" data-idx="${i}" data-field="allergens">${ALLERGENS.map((a) => `<option ${it.allergens.includes(a) ? 'selected' : ''}>${a}</option>`).join('')}</select>
-          </label>
-          <label class="multi purple">痘痘風險
-            <select multiple data-bind="item-multi" data-idx="${i}" data-field="acneTags">${ACNE_TAGS.map((a) => `<option ${it.acneTags.includes(a) ? 'selected' : ''}>${a}</option>`).join('')}</select>
-          </label>
+          <input class="kcal-input" type="number" inputmode="numeric" min="0" data-bind="item" data-idx="${i}" data-field="calories" value="${Number(it.calories) || 0}">
+          <span class="muted">kcal</span>
+          <span class="muted small unit-hint">${it.qty !== 1 ? `每份 ${Math.round(it.unitCal)} kcal` : ''}</span>
         </div>
-        ${it.allergens.length ? `<span class="tagline orange">過敏原：${esc(it.allergens.join('、'))}</span>` : ''}
-        ${it.acneTags.length ? `<span class="tagline purple">痘痘風險：${esc(it.acneTags.join('、'))}</span>` : ''}
+        ${tagPicker(it, i, 'allergens', '過敏原', ALLERGENS, 'orange')}
+        ${tagPicker(it, i, 'acneTags', '痘痘風險', ACNE_TAGS, 'purple')}
       </div>`;
 
     return `<div class="sheet-bar"><button data-action="close-sheet">取消</button><b>${e.id ? '編輯餐點' : '新增餐點'}</b><button class="primary" data-action="save-meal">儲存</button></div>
@@ -715,7 +740,7 @@ const SHEETS = {
       <div class="sheet-body">
         <section class="group">
           ${lib.length ? lib.map((f) => `<div class="row">
-              <span class="grow">${esc(f.name)}<small>${esc(f.portion || '')} ${Number(f.calories) || 0} kcal・吃過 ${f.count} 次${f.allergens.length ? `・⚠︎ ${esc(f.allergens.join('、'))}` : ''}</small></span>
+              <span class="grow">${esc(f.name)}<small>${esc(f.portion || '')} 每份 ${Math.round(f.unitCal)} kcal・吃過 ${f.count} 次${f.allergens.length ? `・⚠︎ ${esc(f.allergens.join('、'))}` : ''}</small></span>
               <button class="icon danger" data-action="hide-food" data-value="${esc(f.name)}" aria-label="從清單移除">✕</button>
             </div>`).join('') : '<div class="row muted">儲存過餐點後，吃過的食物會自動出現在這裡</div>'}
         </section>
@@ -834,13 +859,21 @@ const todayKeyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStar
 const drafts = {};
 
 // ---------- 動作 ----------
+function stepQty(idx, delta) {
+  const it = editor.items[idx];
+  if (!it) return;
+  it.qty = clampQty(it.qty + delta);
+  it.calories = Math.round(it.unitCal * it.qty);
+  renderSheet();
+}
+
 async function openMealEditor(id) {
   if (id) {
     const m = S.meals.find((x) => x.id === id);
-    editor = { ...structuredClone(m), photos: await loadPhotos(m), hint: '' };
+    editor = { ...structuredClone(m), items: m.items.map(normItem), photos: await loadPhotos(m), hint: '', openTags: new Set() };
   } else {
     const time = nowTime();
-    editor = { id: null, day: S.tab === 'today' ? S.day : todayKey(), time, type: guessMealType(time), photos: [], items: [], notes: '', summary: '', hint: '' };
+    editor = { id: null, day: S.tab === 'today' ? S.day : todayKey(), time, type: guessMealType(time), photos: [], items: [], notes: '', summary: '', hint: '', openTags: new Set() };
   }
   openSheet('meal');
 }
@@ -850,7 +883,12 @@ async function saveMeal() {
   const id = e.id || uid();
   const items = e.items
     .filter((i) => i.name.trim())
-    .map((i) => ({ ...i, name: i.name.trim(), calories: Math.max(0, Math.round(Number(i.calories) || 0)) }));
+    .map((i) => {
+      const qty = clampQty(i.qty);
+      const unitCal = Math.max(0, Math.round((Number(i.unitCal) || 0) * 10) / 10);
+      // 合計以編輯中的數字為準（使用者可能直接輸入合計），避免每份熱量四捨五入後差 1 kcal
+      return { ...i, name: i.name.trim(), qty, unitCal, calories: Math.max(0, Math.round(Number(i.calories) || 0)) };
+    });
   const old = e.id ? S.meals.find((x) => x.id === e.id) : null;
   const meal = {
     id, day: e.day, time: e.time, type: e.type,
@@ -1047,8 +1085,21 @@ const ACTIONS = {
   'edit-meal': (t) => openMealEditor(t.dataset.id),
   'close-sheet': () => closeSheet(),
   'meal-type': (t) => { editor.type = t.dataset.value; renderSheet(); },
-  'add-item': () => { editor.items.push({ name: '', portion: '', calories: 0, allergens: [], acneTags: [] }); renderSheet(); },
-  'remove-item': (t) => { editor.items.splice(Number(t.dataset.idx), 1); renderSheet(); },
+  'add-item': () => { editor.items.push({ name: '', portion: '', qty: 1, unitCal: 0, calories: 0, allergens: [], acneTags: [] }); renderSheet(); },
+  'remove-item': (t) => { editor.items.splice(Number(t.dataset.idx), 1); editor.openTags.clear(); renderSheet(); },
+  'qty-dec': (t) => stepQty(Number(t.dataset.idx), -0.5),
+  'qty-inc': (t) => stepQty(Number(t.dataset.idx), 0.5),
+  'item-tag': (t) => {
+    const list = editor.items[Number(t.dataset.idx)][t.dataset.field];
+    const at = list.indexOf(t.dataset.value);
+    if (at >= 0) list.splice(at, 1); else list.push(t.dataset.value);
+    renderSheet();
+  },
+  'item-tags-open': (t) => {
+    const key = `${t.dataset.idx}:${t.dataset.field}`;
+    if (!editor.openTags.delete(key)) editor.openTags.add(key);
+    renderSheet();
+  },
   'save-meal': () => saveMeal().catch(fail),
   'delete-meal': async () => {
     if (!confirm('確定要刪除這一餐嗎？')) return;
@@ -1068,6 +1119,7 @@ const ACTIONS = {
     try {
       const r = await aiMeal(target.photos, target.hint);
       target.items = r.items;
+      target.openTags.clear();
       target.summary = r.summary;
       if (!r.items.length) toast('沒有辨識到食物，可以手動新增', 3500);
     } catch (err) {
@@ -1098,7 +1150,10 @@ const ACTIONS = {
     const name = t.dataset.value;
     const idx = editor.items.findIndex((i) => i.name.trim() === name);
     if (idx >= 0) editor.items.splice(idx, 1);
-    else editor.items.push(cloneItem(foodLibrary().find((f) => f.name === name)));
+    else {
+      const f = cloneItem(foodLibrary().find((x) => x.name === name));
+      editor.items.push({ ...f, qty: 1, calories: Math.round(f.unitCal) });
+    }
     renderSheet();
   },
   'open-foods': () => openSheet('foods'),
@@ -1431,7 +1486,13 @@ const INPUTS = {
   'face-notes': (t) => { faceEditor.notes = t.value; },
   'item': (t) => {
     const item = editor.items[Number(t.dataset.idx)];
-    item[t.dataset.field] = t.dataset.field === 'calories' ? Number(t.value) || 0 : t.value;
+    if (t.dataset.field === 'calories') {
+      item.calories = Math.max(0, Number(t.value) || 0);
+      item.unitCal = item.calories / (item.qty || 1);
+      // 只更新「每份」說明，不重繪，避免輸入中失去焦點
+      const hint = t.closest('.item').querySelector('.unit-hint');
+      if (hint) hint.textContent = item.qty !== 1 ? `每份 ${Math.round(item.unitCal)} kcal` : '';
+    } else item[t.dataset.field] = t.value;
     $('#meal-total').textContent = `合計 ${sum(editor.items, (i) => Number(i.calories) || 0)} kcal`;
   },
   'prod': (t) => { productEditor[t.dataset.field] = t.type === 'checkbox' ? t.checked : t.value; },
@@ -1466,10 +1527,6 @@ const CHANGES = {
   },
   'face-day': (t) => { if (t.value) { faceEditor.day = t.value; renderSheet(); } },
   'face-time': (t) => { if (t.value) faceEditor.time = t.value; },
-  'item-multi': (t) => {
-    editor.items[Number(t.dataset.idx)][t.dataset.field] = [...t.selectedOptions].map((o) => o.value);
-    renderSheet();
-  },
   'prod': INPUTS.prod,
   'supp': INPUTS.supp,
   'skin-notes': (t) => {
